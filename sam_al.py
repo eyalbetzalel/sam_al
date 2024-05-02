@@ -19,6 +19,7 @@ from importCityScapesToDataloader import train_dataset, val_dataset, test_datase
 from segment_anything import sam_model_registry, SamPredictor
 from matplotlib.colors import ListedColormap
 from samplingUtils import ActiveLearningDataset
+import torch 
 
 def visualize_and_save(image, gt_mask, sam_mask, filename):
     """
@@ -88,7 +89,7 @@ def polygon_to_mask(polygon, image_shape=(1024, 2048)):
     """
     mask = np.zeros(image_shape, dtype=np.uint8)
     cv2.fillPoly(mask, [np.array(polygon)], 1)
-    return mask.astype(bool)
+    return mask
 
 def setup_sam_model():
     sam_checkpoint = "/workspace/mask-auto-labeler/SAM_AL/sam_vit_h_4b8939.pth"
@@ -105,24 +106,53 @@ def finetune_sam_model(dataset, batch_size=4, epoches=10):
     from torch.nn.functional import threshold, normalize
 
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-    
-    batch = next(iter(dataloader))
-    for k,v in batch.items():
-        print(k,v.shape)
-
     optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters())
     loss_fn = torch.nn.MSELoss()
 
-    for epoch in range(epoches):
+    for input_image, data in dataset:
+        # data is a list of dictionaries with keys 'label', 'polygon', and 'bbox'. this code do the following:
+        # 1. Convert the polygon to a mask and put it in a tensors (gt_mask)
+        # 2. Create list of bboxes
+        # 3. Create a list of labels
+
+        # Convert the polygon to a mask and put it in a tensors (gt_mask):
+        input_image = input_image.to(predictor.device)
+        
+        original_image_size = (1024, 2048)
+        input_size = (1024, 2048)
+        gt_mask = []
+        for item in data:
+            polygon = item['polygon']
+            mask = polygon_to_mask(polygon)
+            gt_mask.append(mask)
+        gt_mask = torch.tensor(gt_mask).to(predictor.device)
+
+        # Create list of bboxes:
+        bboxes = []
+        for item in data:
+            bbox = item['bbox']
+            bboxes.append(bbox)
+        bboxes = torch.tensor(bboxes, device=predictor.device)
+
+        # Create a list of labels:
+        labels = []
+        for item in data:
+            label = item['label']
+            labels.append(label)
+        
+        # Set the image to the predictor
+
+        transformed_boxes = predictor.transform.apply_boxes_torch(bboxes, input_image.shape[:2])
         
         with torch.no_grad():
 
             """ We want to embed images by wrapping the encoder in the torch.no_grad() 
             context manager, since otherwise we will have memory issues, along with 
             the fact that we are not looking to fine-tune the image encoder. """
-
-            image_embedding = sam_model.image_encoder(input_image)
+            # add another false dimension to input_image
+            input_image = input_image.unsqueeze(0)
+            input_image_postprocess = sam_model.preprocess(input_image)
+            image_embedding = sam_model.image_encoder(input_image_postprocess)
         
         with torch.no_grad():
             
@@ -132,13 +162,13 @@ def finetune_sam_model(dataset, batch_size=4, epoches=10):
             
             sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
                 points=None,
-                boxes=box_torch,
+                boxes=transformed_boxes[:4,:],
                 masks=None,
             )
         """ Finally, we can generate the masks. Note that here we are in single mask generation
             mode (in contrast to the 3 masks that are normally output).""" 
         
-        low_res_masks, iou_predictions = sam_model.mask_decoder(
+        low_res_masks, iou_predictions, upscaled_embedding = sam_model.mask_decoder(
         image_embeddings=image_embedding,
         image_pe=sam_model.prompt_encoder.get_dense_pe(),
         sparse_prompt_embeddings=sparse_embeddings,
@@ -151,14 +181,17 @@ def finetune_sam_model(dataset, batch_size=4, epoches=10):
          predicted masks so that we can compare these to our ground truths. It is important to use torch functionals 
          in order to not break backpropagation."""
     
-        upscaled_masks = sam_model.postprocess_masks(low_res_masks, input_size, original_image_size).to(device)
+        upscaled_masks = sam_model.postprocess_masks(low_res_masks, input_size, original_image_size).to(predictor.device)
 
-        binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(device)
+        binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
+        binary_mask = binary_mask.squeeze()
+        gt_mask = gt_mask[:4,:]
 
-        loss = loss_fn(binary_mask, gt_binary_mask)
+        loss = loss_fn(binary_mask, gt_mask.float())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        print(f"Loss: {loss.item()}")
 
 predictor, sam_model = setup_sam_model()
 iou_dict = {}

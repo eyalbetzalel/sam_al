@@ -22,7 +22,7 @@ class CustomCityscapes(Cityscapes):
             targets[poly_index]['objects'] = poly_list_with_bboxes
             bboxes = torch.as_tensor(bboxes, dtype=torch.int)
         # Return the tensor image and the targets
-        return img_tensor, bboxes
+        return img_tensor, poly_list_with_bboxes
 
     def polygons_to_bboxes(self, polygons):
 
