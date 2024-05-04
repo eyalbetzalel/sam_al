@@ -194,6 +194,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 epoch_losses.append(loss.item())
 
         print(f"Mean loss: {np.mean(epoch_losses)} | Epoch: {epoch}")
+        wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
     
     # Save the model's state dictionary to a file
     torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
@@ -293,10 +294,29 @@ high_flag = True
 #         if iou > 0.8 and high_flag:
 #             visualize_and_save(cv_image, gt_mask, sam_mask, f'output_{label}_high_iou_{iou}.png')
 #             high_flag = False
-        
-active_learning_dataset = ActiveLearningDataset(train_dataset, 0.1)
+
+import wandb
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="DAPT_CityScapes",
+    
+    # track hyperparameters and run metadata
+    config={
+    "active learning method": "random",
+    "architecture": "SAM",
+    "dataset": "CityScapes",
+    "epochs": 20,
+    "batch_size": 64,
+    },
+    
+    # mode="disabled"
+)        
+
+active_learning_dataset = ActiveLearningDataset(train_dataset, 0.2)
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=64, epoches=20)
+finetune_sam_model(dataset=training_subset, batch_size=64, epoches=10)
+wandb.finish()
 
 # TODO 1 : Save model after iteration of traning on random subset of data [V]
 # TODO 2 : Evaluate the model's performance on the validation data
