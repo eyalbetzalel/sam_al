@@ -102,14 +102,14 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
         polygon = item['polygon']
         mask = polygon_to_mask(polygon)
         gt_mask.append(mask)
-    gt_mask = torch.tensor(gt_mask).to(predictor.device)
+    gt_mask = torch.tensor(np.array(gt_mask)).to(predictor.device)
 
     # Create list of bboxes:
     bboxes = []
     for item in data:
         bbox = item['bbox']
         bboxes.append(bbox)
-    bboxes = torch.tensor(bboxes, device=predictor.device)
+    bboxes = torch.tensor(np.array(bboxes), device=predictor.device)
     bboxes = predictor.transform.apply_boxes_torch(bboxes, input_image_size)
 
     # Create a list of labels:
@@ -124,16 +124,17 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     
     return gt_mask_split, bboxes_split, labels_split
 
-def finetune_sam_model(dataset, batch_size=4, epoches=10):
+def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
     # Create a DataLoader instance for the training dataset
     from torch.utils.data import DataLoader
     from torch.nn.functional import threshold, normalize
 
-    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters())
-    loss_fn = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-5, weight_decay=0)
+    loss_fn = torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
 
     for epoch in range(epoches):
+        epoch_losses = []
         for index, (input_image, data) in enumerate(dataset):
 
             input_image = input_image.to(predictor.device)
@@ -144,8 +145,7 @@ def finetune_sam_model(dataset, batch_size=4, epoches=10):
                 """ We want to embed images by wrapping the encoder in the torch.no_grad() 
                 context manager, since otherwise we will have memory issues, along with 
                 the fact that we are not looking to fine-tune the image encoder. """
-                # add another false dimension to input_image
-                input_image = input_image.unsqueeze(0)
+                input_image = input_image.unsqueeze(0) # add another false dimension to input_image
                 input_image_postprocess = sam_model.preprocess(input_image)
                 image_embedding = sam_model.image_encoder(input_image_postprocess)
             
@@ -184,12 +184,82 @@ def finetune_sam_model(dataset, batch_size=4, epoches=10):
 
                 binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
                 binary_mask = binary_mask.squeeze()
+                if len(binary_mask.shape) == 2:
+                    binary_mask = binary_mask.unsqueeze(0)
 
                 loss = loss_fn(binary_mask, curr_gt_mask.float())
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                print(f"Loss: {loss.item()} | Epoch: {epoch} | Index: {index} from {len(dataset)} | Batch: {i} from {len(gt_mask)}")
+                epoch_losses.append(loss.item())
+
+        print(f"Mean loss: {np.mean(epoch_losses)} | Epoch: {epoch}")
+    
+    # Save the model's state dictionary to a file
+    torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
+
+# TODO, Finish this function:
+def evaluate_iou_per_class(model, dataset, device, batch_size=4):
+
+
+    # Dictionary to hold IoU sums and count per class
+    class_iou = defaultdict(lambda: {'iou_sum': 0.0, 'count': 0})
+    
+    # Model in evaluation mode
+    model.eval()
+
+    with torch.no_grad():  # No gradients needed
+        for index, (input_image, data) in enumerate(dataset):
+            input_image = input_image.to(predictor.device)  # Assume 'device' is defined
+            input_image_postprocess = model.preprocess(input_image)
+            image_embedding = model.image_encoder(input_image_postprocess)
+
+            gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)  # Assuming this function is defined
+            
+            for curr_gt_mask, curr_bbox, curr_label in zip(gt_mask, bboxes, labels):
+                sparse_embeddings, dense_embeddings = model.prompt_encoder(
+                    points=None,
+                    boxes=curr_bbox,
+                    masks=None,
+                )
+                
+                low_res_masks, _, _ = model.mask_decoder(
+                    image_embeddings=image_embedding,
+                    image_pe=model.prompt_encoder.get_dense_pe(),
+                    sparse_prompt_embeddings=sparse_embeddings,
+                    dense_prompt_embeddings=dense_embeddings,
+                    multimask_output=False,
+                )
+
+                # Upscale and threshold masks
+                original_image_size = (1024, 2048)
+                upscaled_masks = model.postprocess_masks(low_res_masks, input_image.shape[-2:], original_image_size)
+                binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
+                binary_mask = binary_mask.squeeze()
+
+                # Calculate IoU for each class
+                for i, label in enumerate(curr_label):
+                    intersection = (binary_mask[i] * curr_gt_mask[i]).sum()
+                    union = (binary_mask[i] + curr_gt_mask[i] - (binary_mask[i] * curr_gt_mask[i])).sum()
+                    iou = intersection / union if union > 0 else 0
+
+                    class_iou[label.item()]['iou_sum'] += iou.item()
+                    class_iou[label.item()]['count'] += 1
+
+    # Prepare the results in a DataFrame
+    results = {'Class': [], 'Mean IoU': [], 'Std IoU': []}
+    for label, metrics in class_iou.items():
+        mean_iou = metrics['iou_sum'] / metrics['count']
+        # Collect IoUs to calculate standard deviation
+        ious = [((binary_mask[i] * gt_mask[i]).sum() / ((binary_mask[i] + gt_mask[i] - (binary_mask[i] * gt_mask[i])).sum())).item()
+                for i, l in enumerate(labels) if l.item() == label]
+        std_iou = torch.std(torch.tensor(ious)).item()
+
+        results['Class'].append(label)
+        results['Mean IoU'].append(mean_iou)
+        results['Std IoU'].append(std_iou)
+
+    return pd.DataFrame(results)
 
 predictor, sam_model = setup_sam_model()
 iou_dict = {}
@@ -226,9 +296,9 @@ high_flag = True
         
 active_learning_dataset = ActiveLearningDataset(train_dataset, 0.1)
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=16, epoches=10)
+finetune_sam_model(dataset=training_subset, batch_size=64, epoches=20)
 
-# TODO 1 : Save model after iteration of traning on random subset of data
+# TODO 1 : Save model after iteration of traning on random subset of data [V]
 # TODO 2 : Evaluate the model's performance on the validation data
 # TODO 3 : Implement active learning strategy 
 # TODO 4 : Evaluate the model's performance unsupervisedly on the data
