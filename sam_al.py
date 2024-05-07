@@ -124,6 +124,46 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     
     return gt_mask_split, bboxes_split, labels_split
 
+def plot_and_save_masks(labels, predictions, file_name='masks_comparison.png'):
+    """
+    Plots and saves comparison of label and prediction masks side by side.
+
+    Args:
+    labels (torch.Tensor): A tensor of shape [4, 1024, 2048] on CUDA, representing labels.
+    predictions (torch.Tensor): A tensor of shape [4, 1024, 2048] on CUDA, representing predictions.
+    file_name (str): Filename to save the plot.
+    """
+    # Ensure the input tensors are on the same device and have the expected shape
+    assert labels.shape == predictions.shape == (4, 1024, 2048), "Input tensors must have the shape [4, 1024, 2048]"
+    assert labels.device == predictions.device, "Both tensors must be on the same device"
+
+    # Move tensors to CPU and convert to NumPy arrays
+    labels_np = labels.cpu().detach().numpy()
+    predictions_np = predictions.cpu().detach().numpy()
+
+    # Set up the plot with 4 rows (for each batch) and 2 columns (for labels and predictions)
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 24))
+
+    for i in range(4):
+        # Plot labels
+        axes[i, 0].imshow(labels_np[i], cmap='gray')
+        axes[i, 0].set_title(f'Label {i}')
+        axes[i, 0].axis('off')  # Turn off axis
+
+        # Plot predictions
+        axes[i, 1].imshow(predictions_np[i], cmap='gray')
+        axes[i, 1].set_title(f'Prediction {i}')
+        axes[i, 1].axis('off')  # Turn off axis
+
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    plt.savefig(file_name)
+    plt.close()
+
+# Example usage:
+# Assuming 'labels' and 'predictions' are your tensors on a CUDA device
+# plot_and_save_masks(labels, predictions)
+
 def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
     # Create a DataLoader instance for the training dataset
@@ -187,6 +227,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 if len(binary_mask.shape) == 2:
                     binary_mask = binary_mask.unsqueeze(0)
 
+                plot_and_save_masks(binary_mask, curr_gt_mask.float())
                 loss = loss_fn(binary_mask, curr_gt_mask.float())
                 optimizer.zero_grad()
                 loss.backward()
@@ -310,13 +351,18 @@ wandb.init(
     "batch_size": 64,
     },
     
-    # mode="disabled"
+    mode="disabled"
 )        
 
 active_learning_dataset = ActiveLearningDataset(train_dataset, 0.2)
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=64, epoches=10)
+finetune_sam_model(dataset=training_subset, batch_size=4, epoches=10)
 wandb.finish()
+
+# Debug : 
+
+# Draw with images, bbox, gt_mask, sam_mask and compare
+# _____
 
 # TODO 1 : Save model after iteration of traning on random subset of data [V]
 # TODO 2 : Evaluate the model's performance on the validation data
