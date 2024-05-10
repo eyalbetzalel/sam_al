@@ -15,8 +15,9 @@ from segment_anything import sam_model_registry, SamPredictor
 from matplotlib.colors import ListedColormap
 from samplingUtils import ActiveLearningDataset
 import torch 
+import matplotlib.patches as patches
 
-def visualize_and_save(image, gt_mask, sam_mask, filename):
+def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.png"):
     """
     Visualize and save the image, ground truth mask, and SAM mask.
 
@@ -29,6 +30,13 @@ def visualize_and_save(image, gt_mask, sam_mask, filename):
     Returns:
     None
     """
+
+    # Preprocess (deteach, to cpu, to numpy): 
+    gt_mask = gt_mask.detach().cpu().numpy()[0,:,:]
+    sam_mask = sam_mask.detach().cpu().numpy()[0,:,:]
+    curr_bbox = curr_bbox.detach().cpu().numpy()[0,:]
+    image = image.detach().cpu().numpy().squeeze().transpose((1, 2, 0))
+
     # Create custom colormaps
     gt_cmap = ListedColormap(['none', 'red'])
     sam_cmap = ListedColormap(['none', 'blue'])
@@ -38,6 +46,12 @@ def visualize_and_save(image, gt_mask, sam_mask, filename):
     ax[0].imshow(image)
     ax[0].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)  # Overlay GT mask with opacity
     ax[0].set_title('Image with GT Mask')
+    min_x, min_y, max_x, max_y = curr_bbox * 2
+    
+    width = max_x - min_x
+    height = max_y - min_y
+    rect = patches.Rectangle((min_x, min_y), width, height, linewidth=1, edgecolor='r', facecolor='none')
+    ax[0].add_patch(rect)
 
     ax[1].imshow(image)
     ax[1].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)  # Overlay SAM mask with opacity
@@ -102,6 +116,7 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
         polygon = item['polygon']
         mask = polygon_to_mask(polygon)
         gt_mask.append(mask)
+    mask_list = gt_mask
     gt_mask = torch.tensor(np.array(gt_mask)).to(predictor.device)
 
     # Create list of bboxes:
@@ -179,7 +194,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
-            input_size = (1024, 2048)            
+            input_size = (512, 1024)            
             with torch.no_grad():
 
                 """ We want to embed images by wrapping the encoder in the torch.no_grad() 
@@ -227,6 +242,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 if len(binary_mask.shape) == 2:
                     binary_mask = binary_mask.unsqueeze(0)
 
+                visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox)
                 plot_and_save_masks(binary_mask, curr_gt_mask.float())
                 loss = loss_fn(binary_mask, curr_gt_mask.float())
                 optimizer.zero_grad()
