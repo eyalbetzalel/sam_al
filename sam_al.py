@@ -242,13 +242,20 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 if len(binary_mask.shape) == 2:
                     binary_mask = binary_mask.unsqueeze(0)
 
-                visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox)
-                plot_and_save_masks(binary_mask, curr_gt_mask.float())
+                
+                # plot_and_save_masks(binary_mask, curr_gt_mask.float())
                 loss = loss_fn(binary_mask, curr_gt_mask.float())
+                # if loss > 0.5:
+                #     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename="test_sam_big_loss.png")
+                #     v=0
+                # else:
+                #     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename="test_sam_small_loss.png")
+                #     v=0
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 epoch_losses.append(loss.item())
+                wandb.log({"Runing loss": loss.item()})
 
         print(f"Mean loss: {np.mean(epoch_losses)} | Epoch: {epoch}")
         wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
@@ -367,12 +374,12 @@ wandb.init(
     "batch_size": 64,
     },
     
-    mode="disabled"
+    # mode="disabled"
 )        
 
 active_learning_dataset = ActiveLearningDataset(train_dataset, 0.2)
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=4, epoches=10)
+finetune_sam_model(dataset=training_subset, batch_size=64, epoches=10)
 wandb.finish()
 
 # Debug : 

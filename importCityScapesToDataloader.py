@@ -37,7 +37,12 @@ class CustomCityscapes(Cityscapes):
             min_y = min(point[1] for point in polygon_points)
             max_y = max(point[1] for point in polygon_points)
             bbox = [min_x, min_y, max_x, max_y]
-            
+            if polygon['label'] == 'out of roi' or polygon['label'] == 'sky':
+                v=0
+                continue
+            if min_x == 0 and min_y == 0 and max_x == 2048 and max_y == 1024:
+                v=0
+                continue
             # Create a dictionary with the polygon, label, and bounding box
             curr_dict = {}
             curr_dict['label'] = polygon['label']
@@ -49,15 +54,15 @@ class CustomCityscapes(Cityscapes):
         return new_poly, bboxes
 
 # For training data
-train_dataset = CustomCityscapes('./data/cityscapes', split='train', mode='fine',
+train_dataset = CustomCityscapes('../data/cityscapes', split='train', mode='fine',
                            target_type=['instance', 'color', 'polygon'])
 
 # For validation data
-val_dataset = CustomCityscapes('./data/cityscapes', split='val', mode='fine',
+val_dataset = CustomCityscapes('../data/cityscapes', split='val', mode='fine',
                          target_type=['instance', 'color', 'polygon'])
 
 # For test data
-test_dataset = CustomCityscapes('./data/cityscapes', split='test', mode='fine',
+test_dataset = CustomCityscapes('../data/cityscapes', split='test', mode='fine',
                           target_type=['instance', 'color', 'polygon'])
 
 # tensor, (inst, col, poly) = val_dataset[0]
