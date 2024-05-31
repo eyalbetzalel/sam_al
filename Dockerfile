@@ -31,6 +31,9 @@ RUN apt-get update && apt-get install -y \
 # Clone the GitHub repositories
 COPY sam_al /workspace/sam_al
 
+# Set Git configuration
+RUN git config --global user.email eyalbatzul@gmail.com
+
 # Set the working directory to the cloned repository
 WORKDIR /workspace/sam_al
 
