@@ -181,15 +181,49 @@ def plot_and_save_masks(labels, predictions, file_name='masks_comparison.png'):
 
 def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
+    
+
     # Create a DataLoader instance for the training dataset
     from torch.utils.data import DataLoader
     from torch.nn.functional import threshold, normalize
     from torch.nn.utils import clip_grad_norm_
 
 
-    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-5, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
     loss_fn = torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
+
+    def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
+
+        with torch.no_grad():
+            # Generate prompt embeddings without gradient computation
+            sparse_embeddings, dense_embeddings = model.prompt_encoder(
+                points=None,
+                boxes=bbox,
+                masks=None,
+            )
+
+        # Generate masks using the model's mask decoder
+        low_res_masks, iou_predictions = model.mask_decoder(
+            image_embeddings=image_embedding,
+            image_pe=model.prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            multimask_output=False,
+        )
+
+        # Upscale masks and convert to binary format
+        upscaled_masks = model.postprocess_masks(low_res_masks, input_size, original_image_size).to(predictor_device)
+        binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor_device)
+        binary_mask = binary_mask.squeeze()
+        if len(binary_mask.shape) == 2:
+            binary_mask = binary_mask.unsqueeze(0)
+
+        return binary_mask
+
+    def get_loss(model, binary_mask, gt_mask):
+        return loss_fn(binary_mask, gt_mask.float())
+
 
 
     for epoch in range(epoches):
@@ -214,61 +248,31 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
             
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
 
-                with torch.no_grad():
-                    
-                    """ We can also generate the prompt embeddings within the no_grad context manager. 
-                    We use our bounding box coordinates, converted to pytorch tensors.
-                    """
-                    
-                    sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
-                        points=None,
-                        boxes=curr_bbox,
-                        masks=None,
-                    )
-                """ Finally, we can generate the masks. Note that here we are in single mask generation
-                    mode (in contrast to the 3 masks that are normally output).""" 
-                
-                low_res_masks, iou_predictions = sam_model.mask_decoder(
-                image_embeddings=image_embedding,
-                image_pe=sam_model.prompt_encoder.get_dense_pe(),
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                multimask_output=False,
-                )
+                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+                wandb.log({"Initial Loss": loss.item()})  # Log initial loss
 
-                """ The final step here is to upscale the masks back to the original image size since they are low resolution.
-                We can use Sam.postprocess_masks to achieve this. We will also want to generate binary masks from the 
-                predicted masks so that we can compare these to our ground truths. It is important to use torch functionals 
-                in order to not break backpropagation."""
-            
-                upscaled_masks = sam_model.postprocess_masks(low_res_masks, input_size, original_image_size).to(predictor.device)
+                # If the loss is high, train on this image until the loss is reduced
+                if loss > 0.15 :
+                    visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_start_{index}.png")
+                    while loss > 0.05:
+                        print(loss.item())
+                        optimizer.zero_grad()
+                        loss.backward()
+                        clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=1e-4)
+                        optimizer.step()
 
-                binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
-                binary_mask = binary_mask.squeeze()
-                if len(binary_mask.shape) == 2:
-                    binary_mask = binary_mask.unsqueeze(0)
+                        # Recompute loss and binary mask after updating
+                        binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                        loss = get_loss(sam_model, binary_mask, curr_gt_mask)  # Update the loss variable
+                        wandb.log({"Updated Loss": loss.item()})  # Log updated loss
+                        
+                    # Optionally, save or visualize the current mask
+                else:
+                    continue
 
-                
-                # plot_and_save_masks(binary_mask, curr_gt_mask.float())
-                loss = loss_fn(binary_mask, curr_gt_mask.float())
-                if loss > 0.1:
-                    visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename="test_sam_big_loss.png")
-                    v=0
-                # else:
-                #     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename="test_sam_small_loss.png")
-                #     v=0
-                optimizer.zero_grad()
-                loss.backward()
-                # total_norm = clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=float('inf'))
-                # max_norms.append(total_norm.item())
-                clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=1e-4) # Clip gradients to avoid explosion
-                optimizer.step()
-                epoch_losses.append(loss.item())
-                wandb.log({"Runing loss": loss.item()})
-            # Analyze the collected norms
-            # wandb.log({"Average gradient norm": (sum(max_norms) / len(max_norms))})
-            # wandb.log({"Maximum gradient norm": max(max_norms)})
-        # print(f"Mean loss: {np.mean(epoch_losses)} | Epoch: {epoch}")
+                visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_end_{index}.png")       
+
         wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
         scheduler.step()  # Update the learning rate
     
