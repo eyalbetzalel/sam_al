@@ -101,7 +101,7 @@ def polygon_to_mask(polygon, image_shape=(1024, 2048)):
     return mask
 
 def setup_sam_model():
-    sam_checkpoint = "/workspace/mask-auto-labeler/SAM_AL/sam_vit_h_4b8939.pth"
+    sam_checkpoint = "/workspace/sam_al/model-directory/sam_vit_h_4b8939.pth"
     model_type = "vit_h"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     sam.to(device="cuda:1")
@@ -228,7 +228,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 """ Finally, we can generate the masks. Note that here we are in single mask generation
                     mode (in contrast to the 3 masks that are normally output).""" 
                 
-                low_res_masks, iou_predictions, upscaled_embedding = sam_model.mask_decoder(
+                low_res_masks, iou_predictions = sam_model.mask_decoder(
                 image_embeddings=image_embedding,
                 image_pe=sam_model.prompt_encoder.get_dense_pe(),
                 sparse_prompt_embeddings=sparse_embeddings,
