@@ -275,68 +275,68 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
     # Save the model's state dictionary to a file
     torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
 
-# TODO, Finish this function:
-def evaluate_iou_per_class(model, dataset, device, batch_size=4):
+# # TODO, Finish this function:
+# def evaluate_iou_per_class(model, dataset, device, batch_size=4):
 
 
-    # Dictionary to hold IoU sums and count per class
-    class_iou = defaultdict(lambda: {'iou_sum': 0.0, 'count': 0})
+#     # Dictionary to hold IoU sums and count per class
+#     class_iou = defaultdict(lambda: {'iou_sum': 0.0, 'count': 0})
     
-    # Model in evaluation mode
-    model.eval()
+#     # Model in evaluation mode
+#     model.eval()
 
-    with torch.no_grad():  # No gradients needed
-        for index, (input_image, data) in enumerate(dataset):
-            input_image = input_image.to(predictor.device)  # Assume 'device' is defined
-            input_image_postprocess = model.preprocess(input_image)
-            image_embedding = model.image_encoder(input_image_postprocess)
+#     with torch.no_grad():  # No gradients needed
+#         for index, (input_image, data) in enumerate(dataset):
+#             input_image = input_image.to(predictor.device)  # Assume 'device' is defined
+#             input_image_postprocess = model.preprocess(input_image)
+#             image_embedding = model.image_encoder(input_image_postprocess)
 
-            gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)  # Assuming this function is defined
+#             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)  # Assuming this function is defined
             
-            for curr_gt_mask, curr_bbox, curr_label in zip(gt_mask, bboxes, labels):
-                sparse_embeddings, dense_embeddings = model.prompt_encoder(
-                    points=None,
-                    boxes=curr_bbox,
-                    masks=None,
-                )
+#             for curr_gt_mask, curr_bbox, curr_label in zip(gt_mask, bboxes, labels):
+#                 sparse_embeddings, dense_embeddings = model.prompt_encoder(
+#                     points=None,
+#                     boxes=curr_bbox,
+#                     masks=None,
+#                 )
                 
-                low_res_masks, _, _ = model.mask_decoder(
-                    image_embeddings=image_embedding,
-                    image_pe=model.prompt_encoder.get_dense_pe(),
-                    sparse_prompt_embeddings=sparse_embeddings,
-                    dense_prompt_embeddings=dense_embeddings,
-                    multimask_output=False,
-                )
+#                 low_res_masks, _, _ = model.mask_decoder(
+#                     image_embeddings=image_embedding,
+#                     image_pe=model.prompt_encoder.get_dense_pe(),
+#                     sparse_prompt_embeddings=sparse_embeddings,
+#                     dense_prompt_embeddings=dense_embeddings,
+#                     multimask_output=False,
+#                 )
 
-                # Upscale and threshold masks
-                original_image_size = (1024, 2048)
-                upscaled_masks = model.postprocess_masks(low_res_masks, input_image.shape[-2:], original_image_size)
-                binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
-                binary_mask = binary_mask.squeeze()
+#                 # Upscale and threshold masks
+#                 original_image_size = (1024, 2048)
+#                 upscaled_masks = model.postprocess_masks(low_res_masks, input_image.shape[-2:], original_image_size)
+#                 binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
+#                 binary_mask = binary_mask.squeeze()
 
-                # Calculate IoU for each class
-                for i, label in enumerate(curr_label):
-                    intersection = (binary_mask[i] * curr_gt_mask[i]).sum()
-                    union = (binary_mask[i] + curr_gt_mask[i] - (binary_mask[i] * curr_gt_mask[i])).sum()
-                    iou = intersection / union if union > 0 else 0
+#                 # Calculate IoU for each class
+#                 for i, label in enumerate(curr_label):
+#                     intersection = (binary_mask[i] * curr_gt_mask[i]).sum()
+#                     union = (binary_mask[i] + curr_gt_mask[i] - (binary_mask[i] * curr_gt_mask[i])).sum()
+#                     iou = intersection / union if union > 0 else 0
 
-                    class_iou[label.item()]['iou_sum'] += iou.item()
-                    class_iou[label.item()]['count'] += 1
+#                     class_iou[label.item()]['iou_sum'] += iou.item()
+#                     class_iou[label.item()]['count'] += 1
 
-    # Prepare the results in a DataFrame
-    results = {'Class': [], 'Mean IoU': [], 'Std IoU': []}
-    for label, metrics in class_iou.items():
-        mean_iou = metrics['iou_sum'] / metrics['count']
-        # Collect IoUs to calculate standard deviation
-        ious = [((binary_mask[i] * gt_mask[i]).sum() / ((binary_mask[i] + gt_mask[i] - (binary_mask[i] * gt_mask[i])).sum())).item()
-                for i, l in enumerate(labels) if l.item() == label]
-        std_iou = torch.std(torch.tensor(ious)).item()
+#     # Prepare the results in a DataFrame
+#     results = {'Class': [], 'Mean IoU': [], 'Std IoU': []}
+#     for label, metrics in class_iou.items():
+#         mean_iou = metrics['iou_sum'] / metrics['count']
+#         # Collect IoUs to calculate standard deviation
+#         ious = [((binary_mask[i] * gt_mask[i]).sum() / ((binary_mask[i] + gt_mask[i] - (binary_mask[i] * gt_mask[i])).sum())).item()
+#                 for i, l in enumerate(labels) if l.item() == label]
+#         std_iou = torch.std(torch.tensor(ious)).item()
 
-        results['Class'].append(label)
-        results['Mean IoU'].append(mean_iou)
-        results['Std IoU'].append(std_iou)
+#         results['Class'].append(label)
+#         results['Mean IoU'].append(mean_iou)
+#         results['Std IoU'].append(std_iou)
 
-    return pd.DataFrame(results)
+#     return pd.DataFrame(results)
 
 predictor, sam_model = setup_sam_model()
 iou_dict = {}
@@ -373,6 +373,9 @@ high_flag = True
 
 import wandb
 
+wandb.login()
+
+
 wandb.init(
     # set the wandb project where this run will be logged
     project="DAPT_CityScapes",
@@ -386,12 +389,12 @@ wandb.init(
     "batch_size": 64,
     },
     
-    # mode="disabled"
+    mode="disabled"
 )        
 
 active_learning_dataset = ActiveLearningDataset(train_dataset, 0.2)
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=64, epoches=10)
+finetune_sam_model(dataset=training_subset, batch_size=1, epoches=10)
 wandb.finish()
 
 # Debug : 
