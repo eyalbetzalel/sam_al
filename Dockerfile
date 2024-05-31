@@ -8,7 +8,25 @@ WORKDIR /workspace
 RUN apt-get update && apt-get install -y \
     git \
     libgl1-mesa-glx \
+    build-essential \
+    cmake \
+    wget \
+    unzip \
+    yasm \
+    pkg-config \
+    libswscale-dev \
+    libtbb2 \
+    libtbb-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libavformat-dev \
+    libpq-dev \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
+    
+    
+
 
 # Clone the GitHub repositories
 COPY sam_al /workspace/sam_al
@@ -33,4 +51,4 @@ RUN pip install git+https://github.com/facebookresearch/segment-anything.git
 RUN pip install opencv-python pycocotools matplotlib onnxruntime onnx
 
 # Copy the SAM model file into the container (if needed)
-COPY sam_vit_h_4b8939.pth /workspace/sam_al/path-to-your-model-directory/
+COPY sam_vit_h_4b8939.pth /workspace/sam_al/model-directory/
