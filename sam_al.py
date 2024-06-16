@@ -187,11 +187,13 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
     from torch.utils.data import DataLoader
     from torch.nn.functional import threshold, normalize
     from torch.nn.utils import clip_grad_norm_
+    from itertools import chain
 
 
-    optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
+    #optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
     loss_fn = torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
     def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
 
@@ -244,6 +246,11 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
             
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
             
+            if len(dataset) == 1:
+                gt_mask = [gt_mask[36]]
+                bboxes = [bboxes[36]]
+                labels = [labels[36]]
+
             max_norms = []            
             
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
@@ -253,13 +260,13 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 wandb.log({"Initial Loss": loss.item()})  # Log initial loss
 
                 # If the loss is high, train on this image until the loss is reduced
-                if loss > 0.15 :
+                if loss > 0 :
                     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_start_{index}.png")
-                    while loss > 0.05:
+                    while loss > 0:
                         print(loss.item())
                         optimizer.zero_grad()
                         loss.backward()
-                        clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=1e-4)
+                        # clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=1e-4)
                         optimizer.step()
 
                         # Recompute loss and binary mask after updating
@@ -274,7 +281,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_end_{index}.png")       
 
         wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
-        scheduler.step()  # Update the learning rate
+        # scheduler.step()  # Update the learning rate
     
     # Save the model's state dictionary to a file
     torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
@@ -396,7 +403,7 @@ wandb.init(
     mode="disabled"
 )        
 
-active_learning_dataset = ActiveLearningDataset(train_dataset, 0.2)
+active_learning_dataset = ActiveLearningDataset(train_dataset, train_percent=0.2, sampling_method='fixed')
 training_subset = active_learning_dataset.get_training_subset()
 finetune_sam_model(dataset=training_subset, batch_size=1, epoches=10)
 wandb.finish()
