@@ -101,10 +101,10 @@ def polygon_to_mask(polygon, image_shape=(1024, 2048)):
     return mask
 
 def setup_sam_model():
-    sam_checkpoint = "/workspace/sam_al/model-directory/sam_vit_h_4b8939.pth"
-    model_type = "vit_h"
+    sam_checkpoint = "/workspace/sam_al/model-directory/sam_vit_b_01ec64.pth"
+    model_type = "vit_b"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-    sam.to(device="cuda:1")
+    sam.to(device="cuda:0")
     predictor = SamPredictor(sam)
     return predictor, sam
 
@@ -178,6 +178,7 @@ def plot_and_save_masks(labels, predictions, file_name='masks_comparison.png'):
 # Example usage:
 # Assuming 'labels' and 'predictions' are your tensors on a CUDA device
 # plot_and_save_masks(labels, predictions)
+torch.autograd.set_detect_anomaly(True)
 
 def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
@@ -232,18 +233,6 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
         epoch_losses = []
         for index, (input_image, data) in enumerate(dataset):
 
-            input_image = input_image.to(predictor.device)
-            original_image_size = (1024, 2048)
-            input_size = (512, 1024)            
-            with torch.no_grad():
-
-                """ We want to embed images by wrapping the encoder in the torch.no_grad() 
-                context manager, since otherwise we will have memory issues, along with 
-                the fact that we are not looking to fine-tune the image encoder. """
-                input_image = input_image.unsqueeze(0) # add another false dimension to input_image
-                input_image_postprocess = sam_model.preprocess(input_image)
-                image_embedding = sam_model.image_encoder(input_image_postprocess)
-            
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
             
             if len(dataset) == 1:
@@ -251,36 +240,33 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 bboxes = [bboxes[36]]
                 labels = [labels[36]]
 
-            max_norms = []            
-            
+            input_image = input_image.to(predictor.device)
+            original_image_size = (1024, 2048)
+            input_size = (512, 1024)            
+            # with torch.no_grad():
+
+            """ We want to embed images by wrapping the encoder in the torch.no_grad() 
+            context manager, since otherwise we will have memory issues, along with 
+            the fact that we are not looking to fine-tune the image encoder. """
+            input_image = input_image.unsqueeze(0) # add another false dimension to input_image
+                
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
+                while True: 
 
-                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
-                loss = get_loss(sam_model, binary_mask, curr_gt_mask)
-                wandb.log({"Initial Loss": loss.item()})  # Log initial loss
+                    input_image_postprocess = sam_model.preprocess(input_image)
+                    image_embedding = sam_model.image_encoder(input_image_postprocess)
 
-                # If the loss is high, train on this image until the loss is reduced
-                if loss > 0 :
-                    visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_start_{index}.png")
-                    while loss > 0:
-                        print(loss.item())
-                        optimizer.zero_grad()
-                        loss.backward()
-                        # clip_grad_norm_(sam_model.mask_decoder.parameters(), max_norm=1e-4)
-                        optimizer.step()
+                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                    loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    print(loss.item())
+                    # wandb.log({"Initial Loss": loss.item()})  # Log initial loss
+                    del loss, binary_mask, image_embedding, input_image_postprocess
+                    torch.cuda.empty_cache()
 
-                        # Recompute loss and binary mask after updating
-                        binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
-                        loss = get_loss(sam_model, binary_mask, curr_gt_mask)  # Update the loss variable
-                        wandb.log({"Updated Loss": loss.item()})  # Log updated loss
-                        
-                    # Optionally, save or visualize the current mask
-                else:
-                    continue
-
-                visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"big_loss_end_{index}.png")       
-
-        wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
+        # wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
         # scheduler.step()  # Update the learning rate
     
     # Save the model's state dictionary to a file
@@ -382,31 +368,31 @@ high_flag = True
 #             visualize_and_save(cv_image, gt_mask, sam_mask, f'output_{label}_high_iou_{iou}.png')
 #             high_flag = False
 
-import wandb
+# import wandb
 
-wandb.login()
+# wandb.login()
 
 
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="DAPT_CityScapes",
+# wandb.init(
+#     # set the wandb project where this run will be logged
+#     project="DAPT_CityScapes",
     
-    # track hyperparameters and run metadata
-    config={
-    "active learning method": "random",
-    "architecture": "SAM",
-    "dataset": "CityScapes",
-    "epochs": 20,
-    "batch_size": 64,
-    },
+#     # track hyperparameters and run metadata
+#     config={
+#     "active learning method": "random",
+#     "architecture": "SAM",
+#     "dataset": "CityScapes",
+#     "epochs": 20,
+#     "batch_size": 64,
+#     },
     
-    mode="disabled"
-)        
+#     mode="disabled"
+# )        
 
 active_learning_dataset = ActiveLearningDataset(train_dataset, train_percent=0.2, sampling_method='fixed')
 training_subset = active_learning_dataset.get_training_subset()
 finetune_sam_model(dataset=training_subset, batch_size=1, epoches=10)
-wandb.finish()
+# wandb.finish()
 
 # Debug : 
 
