@@ -209,8 +209,6 @@ class DiceLoss(nn.Module):
     
 def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
-    
-
     # Create a DataLoader instance for the training dataset
     from torch.utils.data import DataLoader
     from torch.nn.functional import threshold, normalize
@@ -220,7 +218,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
     #optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
     optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
-    loss_fn = DiceLoss(smooth=1) #torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
+    loss_fn = DiceLoss(smooth=1) 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
     def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
@@ -254,21 +252,27 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
     def get_loss(model, binary_mask, gt_mask):
         return loss_fn(binary_mask, gt_mask.float())
 
-
-
     for epoch in range(epoches):
         epoch_losses = []
         for index, (input_image, data) in enumerate(dataset):
 
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
             full_labels = labels
-            if len(dataset) == 1:
-                for i, box in enumerate(bboxes):
-                    if calculate_rect_size(box) > 1000 and calculate_rect_size(box) < 130880 and i>40:
-                        gt_mask = [gt_mask[i]]
-                        bboxes = [bboxes[i]]
-                        labels = [labels[i]]
-                        break
+            
+            th_size_boxes = []
+            th_size_labels = []
+            th_size_gt_mask = []
+
+            for i, box in enumerate(bboxes):
+                curr_size = calculate_rect_size(box)
+                if curr_size > 1000 and curr_size < 130880:
+                    th_size_boxes.append(box)
+                    th_size_labels.append(labels[i])
+                    th_size_gt_mask.append(gt_mask[i])
+
+            bboxes =  th_size_boxes
+            labels = th_size_labels
+            gt_mask = th_size_gt_mask
 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
@@ -286,46 +290,44 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
             loss_history = []  # History of loss values to keep track of last k iterations
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
-                while True: 
+                input_image_postprocess = sam_model.preprocess(input_image)
+                image_embedding = sam_model.image_encoder(input_image_postprocess)
 
-                    input_image_postprocess = sam_model.preprocess(input_image)
-                    image_embedding = sam_model.image_encoder(input_image_postprocess)
+                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                print(loss.item())
+                # wandb.log({"Initial Loss": loss.item()})  # Log initial loss
+                # Update loss history
+                if len(loss_history) >= k:
+                    # Remove the oldest loss if we have already k losses in history
+                    oldest_loss = loss_history.pop(0)
+                    # Decrease counter if the oldest loss was part of the decreased losses
+                    if oldest_loss < min_loss:
+                        loss_decreased_counter -= 1
+                # Add current loss to history
+                loss_history.append(loss.item())
 
-                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
-                    loss = get_loss(sam_model, binary_mask, curr_gt_mask)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    print(loss.item())
-                    # wandb.log({"Initial Loss": loss.item()})  # Log initial loss
-                    # Update loss history
-                    if len(loss_history) >= k:
-                        # Remove the oldest loss if we have already k losses in history
-                        oldest_loss = loss_history.pop(0)
-                        # Decrease counter if the oldest loss was part of the decreased losses
-                        if oldest_loss < min_loss:
-                            loss_decreased_counter -= 1
-                    # Add current loss to history
-                    loss_history.append(loss.item())
+                if loss.item() < min_loss:
+                    min_loss = loss.item()
+                    loss_decreased_counter += 1  # Increment counter as current loss is less than min_loss
 
-                    if loss.item() < min_loss:
-                        min_loss = loss.item()
-                        loss_decreased_counter += 1  # Increment counter as current loss is less than min_loss
+                # Check if in the last k iterations at least p iterations had decreased loss
+                if loss_decreased_counter >= p or i == 0:
+                    visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
+                    loss_decreased_counter=0
+                    v=0
 
-                    # Check if in the last k iterations at least p iterations had decreased loss
-                    if loss_decreased_counter >= p or i == 0:
-                        visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
-                        loss_decreased_counter=0
-                        v=0
+                
+                del loss, binary_mask, image_embedding, input_image_postprocess
+                torch.cuda.empty_cache()
+                i+=1
 
-                    
-                    del loss, binary_mask, image_embedding, input_image_postprocess
-                    torch.cuda.empty_cache()
-                    i+=1
-
-                    if i%20 == 0:
-                        scheduler.step()  # Update the learning rate
-                        print(f"Learning Rate: {scheduler.get_lr()}")
+                if i%20 == 0:
+                    scheduler.step()  # Update the learning rate
+                    print(f"Learning Rate: {scheduler.get_lr()}")
                     
         # wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
         # scheduler.step()  # Update the learning rate
@@ -333,101 +335,14 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
     # Save the model's state dictionary to a file
     torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
 
-# # TODO, Finish this function:
-# def evaluate_iou_per_class(model, dataset, device, batch_size=4):
 
-
-#     # Dictionary to hold IoU sums and count per class
-#     class_iou = defaultdict(lambda: {'iou_sum': 0.0, 'count': 0})
-    
-#     # Model in evaluation mode
-#     model.eval()
-
-#     with torch.no_grad():  # No gradients needed
-#         for index, (input_image, data) in enumerate(dataset):
-#             input_image = input_image.to(predictor.device)  # Assume 'device' is defined
-#             input_image_postprocess = model.preprocess(input_image)
-#             image_embedding = model.image_encoder(input_image_postprocess)
-
-#             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)  # Assuming this function is defined
-            
-#             for curr_gt_mask, curr_bbox, curr_label in zip(gt_mask, bboxes, labels):
-#                 sparse_embeddings, dense_embeddings = model.prompt_encoder(
-#                     points=None,
-#                     boxes=curr_bbox,
-#                     masks=None,
-#                 )
-                
-#                 low_res_masks, _, _ = model.mask_decoder(
-#                     image_embeddings=image_embedding,
-#                     image_pe=model.prompt_encoder.get_dense_pe(),
-#                     sparse_prompt_embeddings=sparse_embeddings,
-#                     dense_prompt_embeddings=dense_embeddings,
-#                     multimask_output=False,
-#                 )
-
-#                 # Upscale and threshold masks
-#                 original_image_size = (1024, 2048)
-#                 upscaled_masks = model.postprocess_masks(low_res_masks, input_image.shape[-2:], original_image_size)
-#                 binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor.device)
-#                 binary_mask = binary_mask.squeeze()
-
-#                 # Calculate IoU for each class
-#                 for i, label in enumerate(curr_label):
-#                     intersection = (binary_mask[i] * curr_gt_mask[i]).sum()
-#                     union = (binary_mask[i] + curr_gt_mask[i] - (binary_mask[i] * curr_gt_mask[i])).sum()
-#                     iou = intersection / union if union > 0 else 0
-
-#                     class_iou[label.item()]['iou_sum'] += iou.item()
-#                     class_iou[label.item()]['count'] += 1
-
-#     # Prepare the results in a DataFrame
-#     results = {'Class': [], 'Mean IoU': [], 'Std IoU': []}
-#     for label, metrics in class_iou.items():
-#         mean_iou = metrics['iou_sum'] / metrics['count']
-#         # Collect IoUs to calculate standard deviation
-#         ious = [((binary_mask[i] * gt_mask[i]).sum() / ((binary_mask[i] + gt_mask[i] - (binary_mask[i] * gt_mask[i])).sum())).item()
-#                 for i, l in enumerate(labels) if l.item() == label]
-#         std_iou = torch.std(torch.tensor(ious)).item()
-
-#         results['Class'].append(label)
-#         results['Mean IoU'].append(mean_iou)
-#         results['Std IoU'].append(std_iou)
-
-#     return pd.DataFrame(results)
 
 predictor, sam_model = setup_sam_model()
 iou_dict = {}
 low_flag = True
 high_flag = True
 
-# for x in test_dataset:
-#     img, (inst, col, poly) = x
-#     cv_image = np.array(img) # Convert PIL to OpenCV
-#     cv_image = cv_image[:, :, ::-1].copy() # Convert RGB to BGR 
-#     predictor.set_image(cv_image) # Set the image to the predictor
-#     for item in poly['objects']:
-#         polygon = item['polygon']
-#         label = item['label']
-#         bbox = np.array(cv2.boundingRect(np.array(polygon))) # Get GT bbox of item
-#         sam_mask, _, _, _ = predictor.predict(
-#             point_coords=None,
-#             point_labels=None,
-#             box=bbox[None, :],
-#             multimask_output=False,) # Get SAM mask of item
-#         sam_mask = sam_mask.squeeze()
-#         gt_mask = polygon_to_mask(polygon)
-#         iou = calculate_iou(gt_mask, sam_mask)
-#         if label not in iou_dict:
-#             iou_dict[label] = [iou]
-#         else:
-#             iou_dict[label].append(iou)   
-#         if iou < 0.2 and low_flag:
-#             visualize_and_save(cv_image, gt_mask, sam_mask, f'output_{label}_low_iou_{iou}.png')
-#             low_flag = False
-#         if iou > 0.8 and high_flag:
-#             visualize_and_save(cv_image, gt_mask, sam_mask, f'output_{label}_high_iou_{iou}.png')
-#             high_flag = False
+
 
 # import wandb
 
@@ -450,22 +365,7 @@ high_flag = True
 #     mode="disabled"
 # )        
 
-active_learning_dataset = ActiveLearningDataset(train_dataset, train_percent=0.2, sampling_method='fixed')
+active_learning_dataset = ActiveLearningDataset(train_dataset, train_percent=0.2, sampling_method='random')
 training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=1, epoches=10)
+finetune_sam_model(dataset=training_subset, batch_size=4, epoches=10)
 # wandb.finish()
-
-# Debug : 
-
-# Draw with images, bbox, gt_mask, sam_mask and compare
-# _____
-
-# TODO 1 : Save model after iteration of traning on random subset of data [V]
-# TODO 2 : Evaluate the model's performance on the validation data
-# TODO 3 : Implement active learning strategy 
-# TODO 4 : Evaluate the model's performance unsupervisedly on the data
-# TODO 5 : Annotate the selected instances unsupervisedly (????????)
-# TODO 6: Retrain the model with the newly annotated instances (fine-tuning SAM)
-# TODO 7: Repeat steps 6-10 until satisfactory performance is achieved
-v=0
-# what is weight decay? how it works? which value to put as default and how?
