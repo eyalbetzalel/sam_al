@@ -1,22 +1,31 @@
-
-
-# Fine tune the model with the newly annotated instances : 
-
-# https://github.com/bnsreenu/python_for_microscopists/blob/master/331_fine_tune_SAM_mito.ipynb
-# https://encord.com/blog/learn-how-to-fine-tune-the-segment-anything-model-sam/
-
-
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-import cv2 
+import cv2
 from importCityScapesToDataloader import train_dataset, val_dataset, test_dataset
 from segment_anything import sam_model_registry, SamPredictor
 from matplotlib.colors import ListedColormap
 from samplingUtils import ActiveLearningDataset
-import torch 
+import torch
 import matplotlib.patches as patches
 import torch.nn as nn
+import random
+from itertools import chain
+
+# Dice loss implementation for segmentation tasks
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, preds, labels):
+        preds = preds.contiguous()
+        labels = labels.contiguous()
+
+        intersection = (preds * labels).sum(dim=(1, 2))
+        dice = (2. * intersection + self.smooth) / (preds.sum(dim=(1, 2)) + labels.sum(dim=(1, 2)) + self.smooth)
+        
+        return 1 - dice.mean()
 
 def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.png"):
     """
@@ -26,26 +35,24 @@ def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.p
     image (numpy.ndarray): The original image.
     gt_mask (numpy.ndarray): Ground truth mask.
     sam_mask (numpy.ndarray): SAM mask.
+    curr_bbox (numpy.ndarray): Bounding box.
     filename (str): The filename to save the image to.
 
     Returns:
     None
     """
-
-    # Preprocess (deteach, to cpu, to numpy): 
     gt_mask = gt_mask.detach().cpu().numpy()[0,:,:]
     sam_mask = sam_mask.detach().cpu().numpy()[0,:,:]
     curr_bbox = curr_bbox.detach().cpu().numpy()[0,:]
     image = image.detach().cpu().numpy().squeeze().transpose((1, 2, 0))
 
-    # Create custom colormaps
     gt_cmap = ListedColormap(['none', 'red'])
     sam_cmap = ListedColormap(['none', 'blue'])
 
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
 
     ax[0].imshow(image)
-    ax[0].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)  # Overlay GT mask with opacity
+    ax[0].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)
     ax[0].set_title('Image with GT Mask')
     min_x, min_y, max_x, max_y = curr_bbox * 2
     
@@ -55,12 +62,12 @@ def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.p
     ax[0].add_patch(rect)
 
     ax[1].imshow(image)
-    ax[1].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)  # Overlay SAM mask with opacity
+    ax[1].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)
     ax[1].set_title('Image with SAM Mask')
 
     ax[2].imshow(image)
-    ax[2].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)  # Overlay GT mask with opacity
-    ax[2].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)  # Overlay SAM mask with opacity
+    ax[2].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)
+    ax[2].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)
     ax[2].set_title('Image with GT and SAM Masks')
 
     for a in ax:
@@ -102,6 +109,13 @@ def polygon_to_mask(polygon, image_shape=(1024, 2048)):
     return mask
 
 def setup_sam_model():
+    """
+    Setup the SAM model and predictor.
+
+    Returns:
+    predictor (SamPredictor): SAM predictor.
+    sam (SAM): SAM model.
+    """
     sam_checkpoint = "/workspace/sam_al/model-directory/sam_vit_b_01ec64.pth"
     model_type = "vit_b"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -110,8 +124,18 @@ def setup_sam_model():
     return predictor, sam
 
 def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(1024, 2048)):
+    """
+    Get values from data iterator.
 
-    # All masks from image to tensor:
+    Parameters:
+    data (list): List of data items.
+    batch_size (int): Batch size.
+    predictor (SamPredictor): SAM predictor.
+    input_image_size (tuple): Input image size.
+
+    Returns:
+    tuple: Tuple containing ground truth masks, bounding boxes, and labels.
+    """
     gt_mask = []
     for item in data:
         polygon = item['polygon']
@@ -120,7 +144,6 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     mask_list = gt_mask
     gt_mask = torch.tensor(np.array(gt_mask)).to(predictor.device)
 
-    # Create list of bboxes:
     bboxes = []
     for item in data:
         bbox = item['bbox']
@@ -128,7 +151,6 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     bboxes = torch.tensor(np.array(bboxes), device=predictor.device)
     bboxes = predictor.transform.apply_boxes_torch(bboxes, input_image_size)
 
-    # Create a list of labels:
     labels = []
     for item in data:
         label = item['label']
@@ -149,100 +171,80 @@ def plot_and_save_masks(labels, predictions, file_name='masks_comparison.png'):
     predictions (torch.Tensor): A tensor of shape [4, 1024, 2048] on CUDA, representing predictions.
     file_name (str): Filename to save the plot.
     """
-    # Ensure the input tensors are on the same device and have the expected shape
     assert labels.shape == predictions.shape == (4, 1024, 2048), "Input tensors must have the shape [4, 1024, 2048]"
     assert labels.device == predictions.device, "Both tensors must be on the same device"
 
-    # Move tensors to CPU and convert to NumPy arrays
     labels_np = labels.cpu().detach().numpy()
     predictions_np = predictions.cpu().detach().numpy()
 
-    # Set up the plot with 4 rows (for each batch) and 2 columns (for labels and predictions)
     fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 24))
 
     for i in range(4):
-        # Plot labels
         axes[i, 0].imshow(labels_np[i], cmap='gray')
         axes[i, 0].set_title(f'Label {i}')
-        axes[i, 0].axis('off')  # Turn off axis
+        axes[i, 0].axis('off')
 
-        # Plot predictions
         axes[i, 1].imshow(predictions_np[i], cmap='gray')
         axes[i, 1].set_title(f'Prediction {i}')
-        axes[i, 1].axis('off')  # Turn off axis
+        axes[i, 1].axis('off')
 
-    # Adjust layout and save the figure
     plt.tight_layout()
     plt.savefig(file_name)
     plt.close()
 
-# Example usage:
-# Assuming 'labels' and 'predictions' are your tensors on a CUDA device
-# plot_and_save_masks(labels, predictions)
 torch.autograd.set_detect_anomaly(True)
 
 def calculate_rect_size(bbox):
-    # Assuming bbox is a tensor with shape [1, 4] and format [x1, y1, x2, y2]
-    # Extract coordinates
+    """
+    Calculate the size of a rectangle.
+
+    Parameters:
+    bbox (torch.Tensor): Bounding box tensor.
+
+    Returns:
+    float: Size of the rectangle.
+    """
     x1, y1, x2, y2 = bbox[0].cpu().numpy()
-    
-    # Calculate width and height
     width = x2 - x1
     height = y2 - y1
-    
-    # Return size (width, height)
-    return width*height
+    return width * height
 
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1):
-        super(DiceLoss, self).__init__()
-        self.smooth = smooth
+def finetune_sam_model(dataset, batch_size=4, epoches=1):
+    """
+    Fine-tune the SAM model on the given dataset.
 
-    def forward(self, preds, labels):
-        preds = preds.contiguous()
-        labels = labels.contiguous()
+    Parameters:
+    dataset (Dataset): The training dataset.
+    batch_size (int): Batch size for training.
+    epoches (int): Number of epochs to train.
 
-        intersection = (preds * labels).sum(dim=(1, 2))
-        dice = (2. * intersection + self.smooth) / (preds.sum(dim=(1, 2)) + labels.sum(dim=(1, 2)) + self.smooth)
-        
-        return 1 - dice.mean()
-    
-def finetune_sam_model(dataset, batch_size=16, epoches=1):
-
-    # Create a DataLoader instance for the training dataset
-    from torch.utils.data import DataLoader
-    from torch.nn.functional import threshold, normalize
-    from torch.nn.utils import clip_grad_norm_
-    from itertools import chain
-
-
-    #optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
+    Returns:
+    None
+    """
     optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
     loss_fn = DiceLoss(smooth=1) 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
     def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
+        """
+        Compute the loss and mask for a given image embedding and bounding box.
 
+        Parameters:
+        model (SAM): The SAM model.
+        image_embedding (torch.Tensor): Image embedding tensor.
+        bbox (torch.Tensor): Bounding box tensor.
+        predictor_device (str): Device to perform computation on.
+
+        Returns:
+        torch.Tensor: Binary mask.
+        """
         with torch.no_grad():
-            # Generate prompt embeddings without gradient computation
-            sparse_embeddings, dense_embeddings = model.prompt_encoder(
-                points=None,
-                boxes=bbox,
-                masks=None,
-            )
+            sparse_embeddings, dense_embeddings = model.prompt_encoder(points=None, boxes=bbox, masks=None)
 
-        # Generate masks using the model's mask decoder
-        low_res_masks, iou_predictions = model.mask_decoder(
-            image_embeddings=image_embedding,
-            image_pe=model.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            multimask_output=False,
-        )
+        low_res_masks, iou_predictions = model.mask_decoder(image_embeddings=image_embedding, image_pe=model.prompt_encoder.get_dense_pe(), sparse_prompt_embeddings=sparse_embeddings, dense_prompt_embeddings=dense_embeddings, multimask_output=False)
 
-        # Upscale masks and convert to binary format
         upscaled_masks = model.postprocess_masks(low_res_masks, input_size, original_image_size).to(predictor_device)
-        binary_mask = normalize(threshold(upscaled_masks, 0.0, 0)).to(predictor_device)
+        binary_mask = torch.nn.functional.normalize(torch.nn.functional.threshold(upscaled_masks, 0.0, 0)).to(predictor_device)
         binary_mask = binary_mask.squeeze()
         if len(binary_mask.shape) == 2:
             binary_mask = binary_mask.unsqueeze(0)
@@ -250,12 +252,21 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
         return binary_mask
 
     def get_loss(model, binary_mask, gt_mask):
+        """
+        Compute the loss between the binary mask and ground truth mask.
+
+        Parameters:
+        model (SAM): The SAM model.
+        binary_mask (torch.Tensor): Binary mask tensor.
+        gt_mask (torch.Tensor): Ground truth mask tensor.
+
+        Returns:
+        torch.Tensor: Loss value.
+        """
         return loss_fn(binary_mask, gt_mask.float())
 
     for epoch in range(epoches):
-        epoch_losses = []
         for index, (input_image, data) in enumerate(dataset):
-
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
             full_labels = labels
             
@@ -276,18 +287,13 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
-            input_size = (512, 1024)            
-            # with torch.no_grad():
-
-            """ We want to embed images by wrapping the encoder in the torch.no_grad() 
-            context manager, since otherwise we will have memory issues, along with 
-            the fact that we are not looking to fine-tune the image encoder. """
-            input_image = input_image.unsqueeze(0) # add another false dimension to input_image
+            input_size = (512, 1024)
+            input_image = input_image.unsqueeze(0)
             min_loss = 1000000
-            k = 10  # Number of last iterations to check
-            p = 5   # Minimum number of iterations with decreased loss
-            loss_decreased_counter = 0  # Counter for iterations where loss decreased
-            loss_history = []  # History of loss values to keep track of last k iterations
+            k = 10
+            p = 5
+            loss_decreased_counter = 0
+            loss_history = []
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 input_image_postprocess = sam_model.preprocess(input_image)
@@ -299,73 +305,105 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                 loss.backward()
                 optimizer.step()
                 print(loss.item())
-                # wandb.log({"Initial Loss": loss.item()})  # Log initial loss
-                # Update loss history
+
                 if len(loss_history) >= k:
-                    # Remove the oldest loss if we have already k losses in history
                     oldest_loss = loss_history.pop(0)
-                    # Decrease counter if the oldest loss was part of the decreased losses
                     if oldest_loss < min_loss:
                         loss_decreased_counter -= 1
-                # Add current loss to history
                 loss_history.append(loss.item())
 
-                if loss.item() < min_loss:
-                    min_loss = loss.item()
-                    loss_decreased_counter += 1  # Increment counter as current loss is less than min_loss
+                # if loss.item() < min_loss:
+                #     min_loss = loss.item()
+                #     loss_decreased_counter += 1
 
-                # Check if in the last k iterations at least p iterations had decreased loss
-                if loss_decreased_counter >= p or i == 0:
-                    visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
-                    loss_decreased_counter=0
-                    v=0
-
+                # if loss_decreased_counter >= p or i == 0:
+                #     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
+                #     loss_decreased_counter = 0
                 
                 del loss, binary_mask, image_embedding, input_image_postprocess
                 torch.cuda.empty_cache()
-                i+=1
+                i += 1
 
-                if i%20 == 0:
-                    scheduler.step()  # Update the learning rate
-                    print(f"Learning Rate: {scheduler.get_lr()}")
+                # if i % 20 == 0:
+                #     scheduler.step()
+                #     print(f"Learning Rate: {scheduler.get_lr()}")
                     
-        # wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
-        # scheduler.step()  # Update the learning rate
-    
-    # Save the model's state dictionary to a file
-    torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
-
-
+    # torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
 
 predictor, sam_model = setup_sam_model()
-iou_dict = {}
-low_flag = True
-high_flag = True
 
+def random_query_strategy(unlabeled_subset, num_samples):
+    """Randomly select samples from the unlabeled dataset."""
+    return random.sample(range(len(unlabeled_subset)), num_samples)
 
+# Addon: ActiveLearningPlatform class
+class ActiveLearningPlatform:
+    def __init__(self, model, predictor, initial_dataset, batch_size, max_iterations, query_strategy):
+        """
+        Initialize the Active Learning Platform.
 
-# import wandb
+        Parameters:
+        model (SAM): The SAM model.
+        predictor (SamPredictor): The SAM predictor.
+        initial_dataset (Dataset): The initial dataset.
+        batch_size (int): Batch size for training.
+        max_iterations (int): Maximum number of active learning iterations.
+        query_strategy (function): Function to select samples from the unlabeled dataset.
+        """
+        self.model = model
+        self.predictor = predictor
+        self.batch_size = batch_size
+        self.max_iterations = max_iterations
+        self.query_strategy = query_strategy  # Addon: query strategy input
+        self.active_learning_dataset = ActiveLearningDataset(initial_dataset, train_percent=0.001, sampling_method='random')
 
-# wandb.login()
+    def train_model(self):
+        """Train the model on the current labeled dataset."""
+        training_subset = self.active_learning_dataset.get_training_subset()
+        finetune_sam_model(training_subset, batch_size=self.batch_size, epoches=1)
 
+    def perform_inference(self):
+        """Perform inference on the unlabeled dataset (for advanced strategies)."""
+        pass
 
-# wandb.init(
-#     # set the wandb project where this run will be logged
-#     project="DAPT_CityScapes",
-    
-#     # track hyperparameters and run metadata
-#     config={
-#     "active learning method": "random",
-#     "architecture": "SAM",
-#     "dataset": "CityScapes",
-#     "epochs": 20,
-#     "batch_size": 64,
-#     },
-    
-#     mode="disabled"
-# )        
+    def query_labels(self):
+        """
+        Query labels from the unlabeled dataset using the query strategy.
 
-active_learning_dataset = ActiveLearningDataset(train_dataset, train_percent=0.2, sampling_method='random')
-training_subset = active_learning_dataset.get_training_subset()
-finetune_sam_model(dataset=training_subset, batch_size=4, epoches=10)
-# wandb.finish()
+        Returns:
+        list: Indices of selected samples from the unlabeled dataset.
+        """
+        unlabeled_subset = self.active_learning_dataset.get_unlabeled_subset()
+        num_samples_to_query = min(len(unlabeled_subset), self.batch_size) # TODO : Fix this part with an hyperparameter. the batch size isn't for the amount of images is for the amount of masks.
+        queried_indices = self.query_strategy(unlabeled_subset, num_samples_to_query)  # Addon: use query strategy
+        return queried_indices
+
+    def update_datasets(self, new_indices):
+        """Update the datasets by moving newly labeled samples from the unlabeled to labeled set."""
+        self.active_learning_dataset.update_labeled_set(new_indices)
+
+    def run(self):
+        """Run the active learning loop."""
+        for iteration in range(self.max_iterations):
+            self.train_model()
+            queried_indices = self.query_labels()
+            self.update_datasets(queried_indices)
+            print(f"Iteration {iteration + 1}/{self.max_iterations} complete")
+        print("Active learning process complete")
+
+# Example Usage
+initial_dataset = train_dataset
+batch_size = 4
+max_iterations = 10
+query_strategy = random_query_strategy  # Addon: define query strategy
+
+# Addon: initialize and run the active learning platform
+active_learning_platform = ActiveLearningPlatform(sam_model, predictor, initial_dataset, batch_size, max_iterations, query_strategy)
+active_learning_platform.run()
+
+# TODO 1: Implement a more advanced query strategy for active learning.
+# TODO 2: Implement a method to evaluate the model on the validation set.
+# TODO 3: Implement a method to visualize the model predictions on the test set.
+# TODO 4: Implement a method to save the trained model to disk.
+# TODO 5: Implement a method to load a trained model from disk.
+# TODO 6: 
