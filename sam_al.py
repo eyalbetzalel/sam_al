@@ -16,6 +16,7 @@ from matplotlib.colors import ListedColormap
 from samplingUtils import ActiveLearningDataset
 import torch 
 import matplotlib.patches as patches
+import torch.nn as nn
 
 def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.png"):
     """
@@ -180,6 +181,32 @@ def plot_and_save_masks(labels, predictions, file_name='masks_comparison.png'):
 # plot_and_save_masks(labels, predictions)
 torch.autograd.set_detect_anomaly(True)
 
+def calculate_rect_size(bbox):
+    # Assuming bbox is a tensor with shape [1, 4] and format [x1, y1, x2, y2]
+    # Extract coordinates
+    x1, y1, x2, y2 = bbox[0].cpu().numpy()
+    
+    # Calculate width and height
+    width = x2 - x1
+    height = y2 - y1
+    
+    # Return size (width, height)
+    return width*height
+
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, preds, labels):
+        preds = preds.contiguous()
+        labels = labels.contiguous()
+
+        intersection = (preds * labels).sum(dim=(1, 2))
+        dice = (2. * intersection + self.smooth) / (preds.sum(dim=(1, 2)) + labels.sum(dim=(1, 2)) + self.smooth)
+        
+        return 1 - dice.mean()
+    
 def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
     
@@ -192,9 +219,9 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
 
     #optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-4)
-    loss_fn = torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
+    loss_fn = DiceLoss(smooth=1) #torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
     def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
 
@@ -234,11 +261,14 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
         for index, (input_image, data) in enumerate(dataset):
 
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
-            
+            full_labels = labels
             if len(dataset) == 1:
-                gt_mask = [gt_mask[36]]
-                bboxes = [bboxes[36]]
-                labels = [labels[36]]
+                for i, box in enumerate(bboxes):
+                    if calculate_rect_size(box) > 1000 and calculate_rect_size(box) < 130880 and i>40:
+                        gt_mask = [gt_mask[i]]
+                        bboxes = [bboxes[i]]
+                        labels = [labels[i]]
+                        break
 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
@@ -249,7 +279,12 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
             context manager, since otherwise we will have memory issues, along with 
             the fact that we are not looking to fine-tune the image encoder. """
             input_image = input_image.unsqueeze(0) # add another false dimension to input_image
-                
+            min_loss = 1000000
+            k = 10  # Number of last iterations to check
+            p = 5   # Minimum number of iterations with decreased loss
+            loss_decreased_counter = 0  # Counter for iterations where loss decreased
+            loss_history = []  # History of loss values to keep track of last k iterations
+   
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 while True: 
 
@@ -263,9 +298,35 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
                     optimizer.step()
                     print(loss.item())
                     # wandb.log({"Initial Loss": loss.item()})  # Log initial loss
+                    # Update loss history
+                    if len(loss_history) >= k:
+                        # Remove the oldest loss if we have already k losses in history
+                        oldest_loss = loss_history.pop(0)
+                        # Decrease counter if the oldest loss was part of the decreased losses
+                        if oldest_loss < min_loss:
+                            loss_decreased_counter -= 1
+                    # Add current loss to history
+                    loss_history.append(loss.item())
+
+                    if loss.item() < min_loss:
+                        min_loss = loss.item()
+                        loss_decreased_counter += 1  # Increment counter as current loss is less than min_loss
+
+                    # Check if in the last k iterations at least p iterations had decreased loss
+                    if loss_decreased_counter >= p or i == 0:
+                        visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
+                        loss_decreased_counter=0
+                        v=0
+
+                    
                     del loss, binary_mask, image_embedding, input_image_postprocess
                     torch.cuda.empty_cache()
+                    i+=1
 
+                    if i%20 == 0:
+                        scheduler.step()  # Update the learning rate
+                        print(f"Learning Rate: {scheduler.get_lr()}")
+                    
         # wandb.log({"Mean loss": np.mean(epoch_losses), "Epoch": epoch})
         # scheduler.step()  # Update the learning rate
     
