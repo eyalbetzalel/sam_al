@@ -192,7 +192,7 @@ def finetune_sam_model(dataset, batch_size=16, epoches=1):
 
 
     #optimizer = torch.optim.Adam(sam_model.mask_decoder.parameters(), lr=1e-4) #  weight_decay=1e-4
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-4)
     loss_fn = torch.nn.MSELoss() # TODO : #Try DiceFocalLoss, FocalLoss, DiceCELoss
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
