@@ -209,15 +209,15 @@ def calculate_rect_size(bbox):
     height = y2 - y1
     return width * height
 
-def finetune_sam_model(dataset, batch_size=4, epoches=1):
+def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3):
     """
     Fine-tune the SAM model on the given dataset.
 
     Parameters:
-    dataset (Dataset): The training dataset.
+    train_dataset (Dataset): The training dataset.
     batch_size (int): Batch size for training.
     epoches (int): Number of epochs to train.
-
+    patience (int): Number of epochs with no improvement after which training will be stopped.
     Returns:
     None
     """
@@ -265,10 +265,38 @@ def finetune_sam_model(dataset, batch_size=4, epoches=1):
         """
         return loss_fn(binary_mask, gt_mask.float())
 
+    def validate_model(validation_dataset):
+        """
+        Validate the model on the validation dataset.
+
+        Parameters:
+        validation_dataset (Dataset): The validation dataset.
+
+        Returns:
+        float: The average validation loss.
+        """
+        sam_model.eval()
+        validation_loss = 0
+        with torch.no_grad():
+            for input_image, data in validation_dataset:
+                gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
+                input_image = input_image.to(predictor.device)
+                input_image = input_image.unsqueeze(0)
+                for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
+                    input_image_postprocess = sam_model.preprocess(input_image)
+                    image_embedding = sam_model.image_encoder(input_image_postprocess)
+                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                    loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+                    validation_loss += loss.item()
+        sam_model.train()
+        return validation_loss / len(validation_dataset)
+    
+    best_val_loss = float('inf')
+    epochs_without_improvement = 0
+
     for epoch in range(epoches):
-        for index, (input_image, data) in enumerate(dataset):
+        for index, (input_image, data) in enumerate(train_dataset):
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
-            full_labels = labels
             
             th_size_boxes = []
             th_size_labels = []
@@ -289,11 +317,6 @@ def finetune_sam_model(dataset, batch_size=4, epoches=1):
             original_image_size = (1024, 2048)
             input_size = (512, 1024)
             input_image = input_image.unsqueeze(0)
-            min_loss = 1000000
-            k = 10
-            p = 5
-            loss_decreased_counter = 0
-            loss_history = []
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 input_image_postprocess = sam_model.preprocess(input_image)
@@ -304,30 +327,25 @@ def finetune_sam_model(dataset, batch_size=4, epoches=1):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                print(loss.item())
-
-                if len(loss_history) >= k:
-                    oldest_loss = loss_history.pop(0)
-                    if oldest_loss < min_loss:
-                        loss_decreased_counter -= 1
-                loss_history.append(loss.item())
-
-                # if loss.item() < min_loss:
-                #     min_loss = loss.item()
-                #     loss_decreased_counter += 1
-
-                # if loss_decreased_counter >= p or i == 0:
-                #     visualize_and_save(input_image, curr_gt_mask.float(), binary_mask, curr_bbox, filename=f"encoder_loss_decrease_{i}.png")
-                #     loss_decreased_counter = 0
-                
+     
                 del loss, binary_mask, image_embedding, input_image_postprocess
                 torch.cuda.empty_cache()
-                i += 1
-
-                # if i % 20 == 0:
-                #     scheduler.step()
-                #     print(f"Learning Rate: {scheduler.get_lr()}")
                     
+        val_loss = validate_model(validation_dataset)
+        print(f"Epoch {epoch+1}/{epoches}, Validation Loss: {val_loss}")
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
+            # torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+
+        scheduler.step()
     # torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
 
 predictor, sam_model = setup_sam_model()
@@ -338,7 +356,7 @@ def random_query_strategy(unlabeled_subset, num_samples):
 
 # Addon: ActiveLearningPlatform class
 class ActiveLearningPlatform:
-    def __init__(self, model, predictor, initial_dataset, batch_size, max_iterations, query_strategy):
+    def __init__(self, model, predictor, initial_train_dataset, val_dataset, test_dataset, batch_size, max_iterations, query_strategy):
         """
         Initialize the Active Learning Platform.
 
@@ -352,10 +370,12 @@ class ActiveLearningPlatform:
         """
         self.model = model
         self.predictor = predictor
+        self.validation_dataset = val_dataset
+        self.test_dataset = test_dataset
         self.batch_size = batch_size
         self.max_iterations = max_iterations
         self.query_strategy = query_strategy  # Addon: query strategy input
-        self.active_learning_dataset = ActiveLearningDataset(initial_dataset, train_percent=0.001, sampling_method='random')
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.001, sampling_method='random')
 
     def train_model(self):
         """Train the model on the current labeled dataset."""
@@ -390,15 +410,48 @@ class ActiveLearningPlatform:
             self.update_datasets(queried_indices)
             print(f"Iteration {iteration + 1}/{self.max_iterations} complete")
         print("Active learning process complete")
+        self.test_model()
+    
+        def test_model(self):
+            """Test the model on the test dataset."""
+            self.model.eval()
+            test_loss = 0
+            iou_scores = []
+            loss_fn = DiceLoss(smooth=1)
+            
+            with torch.no_grad():
+                for input_image, data in self.test_dataset:
+                    gt_mask, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
+                    input_image = input_image.to(self.predictor.device)
+                    input_image = input_image.unsqueeze(0)
+                    
+                    for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
+                        input_image_postprocess = self.model.preprocess(input_image)
+                        image_embedding = self.model.image_encoder(input_image_postprocess)
+                        binary_mask = self.compute_loss_and_mask(image_embedding, curr_bbox)
+                        loss = self.get_loss(binary_mask, curr_gt_mask)
+                        test_loss += loss.item()
+                        
+                        iou_score = calculate_iou(curr_gt_mask.cpu().numpy(), binary_mask.cpu().numpy())
+                        iou_scores.append(iou_score)
+            
+            avg_test_loss = test_loss / len(self.test_dataset)
+            avg_iou = np.mean(iou_scores)
+            print(f"Test Loss: {avg_test_loss}, Average IoU: {avg_iou}")
 
 # Example Usage
-initial_dataset = train_dataset
+
 batch_size = 4
 max_iterations = 10
 query_strategy = random_query_strategy  # Addon: define query strategy
 
 # Addon: initialize and run the active learning platform
-active_learning_platform = ActiveLearningPlatform(sam_model, predictor, initial_dataset, batch_size, max_iterations, query_strategy)
+active_learning_platform = ActiveLearningPlatform(sam_model, 
+                                                  predictor, 
+                                                  train_dataset, 
+                                                  batch_size, 
+                                                  max_iterations, 
+                                                  query_strategy)
 active_learning_platform.run()
 
 # TODO 1: Implement a more advanced query strategy for active learning.
@@ -407,3 +460,7 @@ active_learning_platform.run()
 # TODO 4: Implement a method to save the trained model to disk.
 # TODO 5: Implement a method to load a trained model from disk.
 # TODO 6: 
+
+# TODO A: Import validation and test datasets.
+# TODO B: Implement a method to evaluate the model on the validation set inside training loop.
+# TODO C: Implement a method to evaluate the model on the test set after training loop 
