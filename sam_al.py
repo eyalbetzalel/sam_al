@@ -11,6 +11,8 @@ import matplotlib.patches as patches
 import torch.nn as nn
 import random
 from itertools import chain
+from torch.utils.data import Subset
+
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -370,8 +372,8 @@ class ActiveLearningPlatform:
         """
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = val_dataset
-        self.test_dataset = test_dataset
+        self.validation_dataset = Subset(val_dataset, [1,2]) # TODO : DELETE THIS LINE
+        self.test_dataset = Subset(test_dataset, [1,2]) # TODO : DELETE THIS LINE
         self.batch_size = batch_size
         self.max_iterations = max_iterations
         self.query_strategy = query_strategy  # Addon: query strategy input
@@ -380,13 +382,13 @@ class ActiveLearningPlatform:
     def train_model(self):
         """Train the model on the current labeled dataset."""
         training_subset = self.active_learning_dataset.get_training_subset()
-        finetune_sam_model(training_subset, batch_size=self.batch_size, epoches=1)
+        finetune_sam_model(training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=1)
 
     def perform_inference(self):
         """Perform inference on the unlabeled dataset (for advanced strategies)."""
         pass
 
-    def query_labels(self):
+    def query_labels(self, num_images_to_query=1):
         """
         Query labels from the unlabeled dataset using the query strategy.
 
@@ -394,7 +396,7 @@ class ActiveLearningPlatform:
         list: Indices of selected samples from the unlabeled dataset.
         """
         unlabeled_subset = self.active_learning_dataset.get_unlabeled_subset()
-        num_samples_to_query = min(len(unlabeled_subset), self.batch_size) # TODO : Fix this part with an hyperparameter. the batch size isn't for the amount of images is for the amount of masks.
+        num_samples_to_query = min(len(unlabeled_subset), num_images_to_query) # TODO : Fix this part with an hyperparameter. the batch size isn't for the amount of images is for the amount of masks.
         queried_indices = self.query_strategy(unlabeled_subset, num_samples_to_query)  # Addon: use query strategy
         return queried_indices
 
@@ -402,65 +404,109 @@ class ActiveLearningPlatform:
         """Update the datasets by moving newly labeled samples from the unlabeled to labeled set."""
         self.active_learning_dataset.update_labeled_set(new_indices)
 
-    def run(self):
-        """Run the active learning loop."""
-        for iteration in range(self.max_iterations):
-            self.train_model()
-            queried_indices = self.query_labels()
-            self.update_datasets(queried_indices)
-            print(f"Iteration {iteration + 1}/{self.max_iterations} complete")
-        print("Active learning process complete")
-        self.test_model()
+    def compute_loss_and_mask(self, image_embedding, bbox):
+        """
+        Compute the loss and mask for a given image embedding and bounding box.
+
+        Parameters:
+        image_embedding (torch.Tensor): Image embedding tensor.
+        bbox (torch.Tensor): Bounding box tensor.
+
+        Returns:
+        torch.Tensor: Binary mask.
+        """
+        with torch.no_grad():
+            sparse_embeddings, dense_embeddings = self.model.prompt_encoder(points=None, boxes=bbox, masks=None)
+
+        low_res_masks, iou_predictions = self.model.mask_decoder(
+            image_embeddings=image_embedding, 
+            image_pe=self.model.prompt_encoder.get_dense_pe(), 
+            sparse_prompt_embeddings=sparse_embeddings, 
+            dense_prompt_embeddings=dense_embeddings, 
+            multimask_output=False
+        )
+
+        upscaled_masks = self.model.postprocess_masks(low_res_masks, (512, 1024), (1024, 2048)).to(self.predictor.device)
+        binary_mask = torch.nn.functional.normalize(torch.nn.functional.threshold(upscaled_masks, 0.0, 0)).to(self.predictor.device)
+        binary_mask = binary_mask.squeeze()
+        if len(binary_mask.shape) == 2:
+            binary_mask = binary_mask.unsqueeze(0)
+
+        return binary_mask
+
+    def get_loss(self, binary_mask, gt_mask):
+        """
+        Compute the loss between the binary mask and ground truth mask.
+
+        Parameters:
+        binary_mask (torch.Tensor): Binary mask tensor.
+        gt_mask (torch.Tensor): Ground truth mask tensor.
+
+        Returns:
+        torch.Tensor: Loss value.
+        """
+        loss_fn = DiceLoss(smooth=1)
+        return loss_fn(binary_mask, gt_mask.float())
     
-        def test_model(self):
-            """Test the model on the test dataset."""
-            self.model.eval()
-            test_loss = 0
-            iou_scores = []
-            loss_fn = DiceLoss(smooth=1)
-            
-            with torch.no_grad():
-                for input_image, data in self.test_dataset:
-                    gt_mask, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
-                    input_image = input_image.to(self.predictor.device)
-                    input_image = input_image.unsqueeze(0)
+    def test_model(self):
+        """Test the model on the test dataset."""
+        self.model.eval()
+        test_loss = 0
+        iou_scores = []
+        
+        with torch.no_grad():
+            for input_image, data in self.test_dataset:
+                gt_mask, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
+                input_image = input_image.to(self.predictor.device)
+                input_image = input_image.unsqueeze(0)
+                
+                for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
+                    input_image_postprocess = self.model.preprocess(input_image)
+                    image_embedding = self.model.image_encoder(input_image_postprocess)
+                    binary_mask = self.compute_loss_and_mask(image_embedding, curr_bbox)
+                    loss = self.get_loss(binary_mask, curr_gt_mask)
+                    test_loss += loss.item()
                     
-                    for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
-                        input_image_postprocess = self.model.preprocess(input_image)
-                        image_embedding = self.model.image_encoder(input_image_postprocess)
-                        binary_mask = self.compute_loss_and_mask(image_embedding, curr_bbox)
-                        loss = self.get_loss(binary_mask, curr_gt_mask)
-                        test_loss += loss.item()
-                        
-                        iou_score = calculate_iou(curr_gt_mask.cpu().numpy(), binary_mask.cpu().numpy())
-                        iou_scores.append(iou_score)
+                    iou_score = calculate_iou(curr_gt_mask.cpu().numpy(), binary_mask.cpu().numpy())
+                    iou_scores.append(iou_score)
             
             avg_test_loss = test_loss / len(self.test_dataset)
             avg_iou = np.mean(iou_scores)
             print(f"Test Loss: {avg_test_loss}, Average IoU: {avg_iou}")
 
+    def run(self, num_images_to_query=1):
+        """Run the active learning loop."""
+        for iteration in range(self.max_iterations):
+            self.train_model()
+            queried_indices = self.query_labels(num_images_to_query)
+            self.update_datasets(queried_indices)
+            print(f"Iteration {iteration + 1}/{self.max_iterations} complete")
+        print("Active learning process complete")
+        self.test_model()
+
 # Example Usage
 
 batch_size = 4
-max_iterations = 10
+max_iterations = 2
 query_strategy = random_query_strategy  # Addon: define query strategy
 
 # Addon: initialize and run the active learning platform
 active_learning_platform = ActiveLearningPlatform(sam_model, 
                                                   predictor, 
-                                                  train_dataset, 
+                                                  train_dataset,
+                                                  val_dataset, 
+                                                  test_dataset, 
                                                   batch_size, 
                                                   max_iterations, 
                                                   query_strategy)
-active_learning_platform.run()
+
+N = int(np.round(len(train_dataset) * 0.001))
+active_learning_platform.run(num_images_to_query = N)
 
 # TODO 1: Implement a more advanced query strategy for active learning.
 # TODO 2: Implement a method to evaluate the model on the validation set.
 # TODO 3: Implement a method to visualize the model predictions on the test set.
 # TODO 4: Implement a method to save the trained model to disk.
 # TODO 5: Implement a method to load a trained model from disk.
-# TODO 6: 
-
-# TODO A: Import validation and test datasets.
-# TODO B: Implement a method to evaluate the model on the validation set inside training loop.
-# TODO C: Implement a method to evaluate the model on the test set after training loop 
+# TODO 6: Split into several files for better organization.
+# TODO 7: logging into wandb (different graph for training of each size of the dataset)
