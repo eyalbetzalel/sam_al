@@ -12,7 +12,7 @@ import torch.nn as nn
 import random
 from itertools import chain
 from torch.utils.data import Subset
-
+import wandb
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -211,7 +211,7 @@ def calculate_rect_size(bbox):
     height = y2 - y1
     return width * height
 
-def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3):
+def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3,iter_num=0):
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -329,12 +329,16 @@ def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-     
+
+                wandb.log({f"Iteration_{iter_num + 1}/Train Loss": loss})
                 del loss, binary_mask, image_embedding, input_image_postprocess
                 torch.cuda.empty_cache()
+                
+                
                     
         val_loss = validate_model(validation_dataset)
-        print(f"Epoch {epoch+1}/{epoches}, Validation Loss: {val_loss}")
+        wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss})
+        
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -381,8 +385,9 @@ class ActiveLearningPlatform:
 
     def train_model(self):
         """Train the model on the current labeled dataset."""
+        iteration = self.iteration
         training_subset = self.active_learning_dataset.get_training_subset()
-        finetune_sam_model(training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=1)
+        finetune_sam_model(training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=1,iter_num=iteration)
 
     def perform_inference(self):
         """Perform inference on the unlabeled dataset (for advanced strategies)."""
@@ -475,8 +480,20 @@ class ActiveLearningPlatform:
             print(f"Test Loss: {avg_test_loss}, Average IoU: {avg_iou}")
 
     def run(self, num_images_to_query=1):
-        """Run the active learning loop."""
+        wandb.init(
+        # set the wandb project where this run will be logged
+        project="ActiveLearningSAM",
+
+        # TODO : track hyperparameters and run metadata
+        # config={
+        # "learning_rate": 0.02,
+        # "architecture": "CNN",
+        # "dataset": "CIFAR-100",
+        # "epochs": 10,
+        # }
+    )
         for iteration in range(self.max_iterations):
+            self.iteration = iteration
             self.train_model()
             queried_indices = self.query_labels(num_images_to_query)
             self.update_datasets(queried_indices)
@@ -510,3 +527,4 @@ active_learning_platform.run(num_images_to_query = N)
 # TODO 5: Implement a method to load a trained model from disk.
 # TODO 6: Split into several files for better organization.
 # TODO 7: logging into wandb (different graph for training of each size of the dataset)
+# TODO 8: After validating that logging is work - change input size before night run
