@@ -13,6 +13,7 @@ import random
 from itertools import chain
 from torch.utils.data import Subset
 import wandb
+import wandb
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -212,6 +213,7 @@ def calculate_rect_size(bbox):
     return width * height
 
 def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3,iter_num=0):
+def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3,iter_num=0):
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -335,6 +337,8 @@ def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=
                 torch.cuda.empty_cache()
                 
                 
+                
+                
                     
         val_loss = validate_model(validation_dataset)
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Validation Loss": val_loss})
@@ -385,6 +389,7 @@ class ActiveLearningPlatform:
 
     def train_model(self):
         """Train the model on the current labeled dataset."""
+        iteration = self.iteration
         iteration = self.iteration
         training_subset = self.active_learning_dataset.get_training_subset()
         finetune_sam_model(training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=3,iter_num=iteration)
@@ -493,7 +498,20 @@ class ActiveLearningPlatform:
         # "epochs": 10,
         # }
     )
+        wandb.init(
+        # set the wandb project where this run will be logged
+        project="ActiveLearningSAM",
+
+        # TODO : track hyperparameters and run metadata
+        # config={
+        # "learning_rate": 0.02,
+        # "architecture": "CNN",
+        # "dataset": "CIFAR-100",
+        # "epochs": 10,
+        # }
+    )
         for iteration in range(self.max_iterations):
+            self.iteration = iteration
             self.iteration = iteration
             self.train_model()
             queried_indices = self.query_labels(num_images_to_query)
