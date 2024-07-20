@@ -213,7 +213,7 @@ def calculate_rect_size(bbox):
     return width * height
 
 def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3,iter_num=0):
-def finetune_sam_model(train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3,iter_num=0):
+
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -390,7 +390,6 @@ class ActiveLearningPlatform:
     def train_model(self):
         """Train the model on the current labeled dataset."""
         iteration = self.iteration
-        iteration = self.iteration
         training_subset = self.active_learning_dataset.get_training_subset()
         finetune_sam_model(training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=3,iter_num=iteration)
 
@@ -463,7 +462,8 @@ class ActiveLearningPlatform:
         self.model.eval()
         test_loss = 0
         iou_scores = []
-        
+        singleImageLoggingFlag = True
+
         with torch.no_grad():
             for input_image, data in self.test_dataset:
                 gt_mask, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
@@ -479,13 +479,19 @@ class ActiveLearningPlatform:
                     
                     iou_score = calculate_iou(curr_gt_mask.cpu().numpy(), binary_mask.cpu().numpy())
                     iou_scores.append(iou_score)
-            
+
+                    if singleImageLoggingFlag:
+                        visualize_and_save(input_image, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
+                        # log image with wandb : 
+                        wandb.log({f"Iteration_{self.iteration + 1}/Test Image": [wandb.Image("test_sam.png")]})
+                        singleImageLoggingFlag = False
+
             avg_test_loss = test_loss / len(self.test_dataset)
             avg_iou = np.mean(iou_scores)
             print(f"Test Loss: {avg_test_loss}, Average IoU: {avg_iou}")
             return avg_test_loss, avg_iou
 
-    def run(self, num_images_to_query=1):
+    def run(self, precent_from_dataset_to_query_each_iteration=0.001):
         wandb.init(
         # set the wandb project where this run will be logged
         project="ActiveLearningSAM",
@@ -498,32 +504,37 @@ class ActiveLearningPlatform:
         # "epochs": 10,
         # }
     )
-        wandb.init(
-        # set the wandb project where this run will be logged
-        project="ActiveLearningSAM",
-
-        # TODO : track hyperparameters and run metadata
-        # config={
-        # "learning_rate": 0.02,
-        # "architecture": "CNN",
-        # "dataset": "CIFAR-100",
-        # "epochs": 10,
-        # }
-    )
+        num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
         for iteration in range(self.max_iterations):
+            
             self.iteration = iteration
-            self.iteration = iteration
-            self.train_model()
+            
+            if iteration != 0:
+                # on first iteration do inference only: 
+                self.train_model()
+                print(f"Iteration {iteration}/{self.max_iterations} complete")    
+
+            
+            test_loss, test_iou = self.test_model()
+
+            total_precent_so_far = precent_from_dataset_to_query_each_iteration * iteration
+            wandb.log({"Test IoU": test_iou, 
+                       "Test Loss": test_loss,
+                       "[%] Dataset": total_precent_so_far})
+
+            # query new labels for the next iteration:
+            num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
             queried_indices = self.query_labels(num_images_to_query)
             self.update_datasets(queried_indices)
-            print(f"Iteration {iteration + 1}/{self.max_iterations} complete")
-            test_loss, test_iou = self.test_model()
-            wandb.log({f"Iteration_{iteration + 1}/Test IoU": test_iou, f"Iteration_{iteration + 1}/Test Loss": test_loss})
+          
+        
+        torch.save(self.model.state_dict(), "model-directory/final_sam_model.pth") # Save model to disk
+        wandb.finish()
 
 # Example Usage
 
 batch_size = 4
-max_iterations = 2
+max_iterations = 3
 query_strategy = random_query_strategy  # Addon: define query strategy
 
 # Addon: initialize and run the active learning platform
@@ -536,14 +547,10 @@ active_learning_platform = ActiveLearningPlatform(sam_model,
                                                   max_iterations, 
                                                   query_strategy)
 
-N = int(np.round(len(train_dataset) * 0.001))
-active_learning_platform.run(num_images_to_query = N)
+active_learning_platform.run(precent_from_dataset_to_query_each_iteration=0.001)
 
 # TODO 1: Implement a more advanced query strategy for active learning.
-# TODO 2: Implement a method to evaluate the model on the validation set.
-# TODO 3: Implement a method to visualize the model predictions on the test set.
 # TODO 4: Implement a method to save the trained model to disk.
 # TODO 5: Implement a method to load a trained model from disk.
 # TODO 6: Split into several files for better organization.
-# TODO 7: logging into wandb (different graph for training of each size of the dataset)
 # TODO 8: After validating that logging is work - change input size before night run
