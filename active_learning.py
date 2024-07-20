@@ -8,7 +8,7 @@ import wandb
 import numpy as np
 
 class ActiveLearningPlatform:
-    def __init__(self, model, predictor, initial_train_dataset, val_dataset, test_dataset, batch_size, max_iterations, query_strategy):
+    def __init__(self, model, predictor, initial_train_dataset, val_dataset, test_dataset, batch_size, training_epoch_per_iteration, lr, max_active_learning_iterations, query_strategy):
         """
         Initialize the Active Learning Platform.
 
@@ -19,25 +19,31 @@ class ActiveLearningPlatform:
         val_dataset (Dataset): The validation dataset.
         test_dataset (Dataset): The test dataset.
         batch_size (int): Batch size for training.
-        max_iterations (int): Maximum number of active learning iterations.
+        training_epoch_per_iteration (int): Max number of training epochs per iteration (train will stop if there is no improvement in valdation loss).
+        lr (float): Learning rate for training.
+        max_active_learning_iterations (int): Maximum number of active learning iterations.
         query_strategy (function): Function to select samples from the unlabeled dataset.
         """
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = Subset(val_dataset, [1, 2]) # TODO: DELETE THIS LINE
-        self.test_dataset = Subset(test_dataset, [1, 2]) # TODO: DELETE THIS LINE
+        self.validation_dataset = val_dataset
+        # self.validation_dataset = Subset(val_dataset, range(10))
+        # self.test_dataset = test_dataset
+        self.test_dataset = Subset(test_dataset, range(1000))
         self.batch_size = batch_size
-        self.max_iterations = max_iterations
+        self.training_epoch_per_iteration = training_epoch_per_iteration
+        self.lr = lr
+        self.max_iterations = max_active_learning_iterations
         self.query_strategy = query_strategy
-        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.001, sampling_method='random')
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='random')
 
     def train_model(self):
         """
         Train the model on the current labeled dataset.
         """
-        iteration = self.iteration
+
         training_subset = self.active_learning_dataset.get_training_subset()
-        finetune_sam_model(self.model, self.predictor, training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=3, iter_num=iteration)
+        finetune_sam_model(self.model, self.predictor, training_subset, self.validation_dataset, batch_size=self.batch_size, epoches=self.training_epoch_per_iteration, iter_num=self.iteration, lr=self.lr)
 
     def perform_inference(self):
         """
@@ -118,13 +124,18 @@ class ActiveLearningPlatform:
         tuple: Average test loss and average IoU score.
         """
         self.model.eval()
-        test_loss = 0
+        test_loss = []
         iou_scores = []
         singleImageLoggingFlag = True
 
         with torch.no_grad():
+
             for input_image, data in self.test_dataset:
+                if data is None:
+                    continue
                 gt_mask, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
+                if len(labels) == 0:
+                    continue
                 input_image = input_image.to(self.predictor.device)
                 input_image = input_image.unsqueeze(0)
                 
@@ -133,7 +144,7 @@ class ActiveLearningPlatform:
                     image_embedding = self.model.image_encoder(input_image_postprocess)
                     binary_mask = self.compute_loss_and_mask(image_embedding, curr_bbox)
                     loss = self.get_loss(binary_mask, curr_gt_mask)
-                    test_loss += loss.item()
+                    test_loss.append(loss.item())
                     
                     iou_score = calculate_iou(curr_gt_mask.cpu().numpy(), binary_mask.cpu().numpy())
                     iou_scores.append(iou_score)
@@ -143,12 +154,12 @@ class ActiveLearningPlatform:
                         wandb.log({f"Iteration_{self.iteration + 1}/Test Image": [wandb.Image("test_sam.png")]})
                         singleImageLoggingFlag = False
 
-            avg_test_loss = test_loss / len(self.test_dataset)
+            avg_test_loss = np.mean(test_loss)
             avg_iou = np.mean(iou_scores)
             print(f"Test Loss: {avg_test_loss}, Average IoU: {avg_iou}")
             return avg_test_loss, avg_iou
 
-    def run(self, precent_from_dataset_to_query_each_iteration=0.001):
+    def run(self, precent_from_dataset_to_query_each_iteration=0.1):
         """
         Run the active learning process.
 
@@ -164,16 +175,17 @@ class ActiveLearningPlatform:
         num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
         for iteration in range(self.max_iterations):
             self.iteration = iteration
-            if iteration != 0:
-                self.train_model()
-                print(f"Iteration {iteration}/{self.max_iterations} complete")    
+            # if iteration != 0:
+            self.train_model()
+            print(f"Iteration {iteration}/{self.max_iterations} complete")    
             
-            test_loss, test_iou = self.test_model()
+            
             total_precent_so_far = precent_from_dataset_to_query_each_iteration * iteration
-            wandb.log({"Test IoU": test_iou, 
-                       "Test Loss": test_loss,
-                       "[%] Dataset": total_precent_so_far})
-
+            # test_loss, test_iou = self.test_model()
+            # wandb.log({"Test IoU": test_iou, 
+            #            "Test Loss": test_loss,
+            #            "[%] Dataset": total_precent_so_far})
+            wandb.log({"[%] Dataset": total_precent_so_far})
             num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
             queried_indices = self.query_labels(num_images_to_query)
             self.update_datasets(queried_indices)

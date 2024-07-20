@@ -22,7 +22,10 @@ class CustomCityscapes(Cityscapes):
             targets[poly_index]['objects'] = poly_list_with_bboxes
             bboxes = torch.as_tensor(bboxes, dtype=torch.int)
         # Return the tensor image and the targets
-        return img_tensor, poly_list_with_bboxes
+        if len(poly_list_with_bboxes) == 0:
+            return img_tensor, None
+        else:
+            return img_tensor, poly_list_with_bboxes
 
     def polygons_to_bboxes(self, polygons):
 
@@ -37,9 +40,13 @@ class CustomCityscapes(Cityscapes):
             min_y = min(point[1] for point in polygon_points)
             max_y = max(point[1] for point in polygon_points)
             bbox = [min_x, min_y, max_x, max_y]
-            if polygon['label'] == 'out of roi' or polygon['label'] == 'sky':
+            
+            if polygon['label'] != 'car' and polygon['label'] != 'truck' and polygon['label'] != 'bus':
                 v=0
                 continue
+            # if polygon['label'] == 'out of roi' or polygon['label'] == 'sky':
+            #     v=0
+            #     continue
             if min_x == 0 and min_y == 0 and max_x == 2048 and max_y == 1024:
                 v=0
                 continue
@@ -65,7 +72,6 @@ val_dataset = CustomCityscapes('../data/cityscapes', split='val', mode='fine',
 test_dataset = CustomCityscapes('../data/cityscapes', split='test', mode='fine',
                           target_type=['instance', 'color', 'polygon'])
 
-# tensor, (inst, col, poly) = val_dataset[0]
-tensor, bboxes = val_dataset[0]
+
 
 v=0

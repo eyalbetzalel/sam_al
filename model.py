@@ -1,9 +1,10 @@
 import torch
 from segment_anything import sam_model_registry, SamPredictor
-from utils import get_values_from_data_iter, calculate_rect_size
+from utils import get_values_from_data_iter, calculate_rect_size, visualize_and_save
 import wandb
 from itertools import chain
 import torch.nn as nn
+import numpy as np
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -51,7 +52,7 @@ def setup_sam_model():
     predictor = SamPredictor(sam)
     return predictor, sam
 
-def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, iter_num=0):
+def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, iter_num=0, lr=1e-5):
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -64,14 +65,15 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     epoches (int): Number of epochs to train.
     patience (int): Number of epochs with no improvement after which training will be stopped.
     iter_num (int): Current iteration number.
+    lr (float): Learning rate.
 
     Returns:
     None
     """
     # Setup optimizer, loss function, and scheduler
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=1e-5)
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=lr)
     loss_fn = DiceLoss(smooth=1) 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
 
     def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
         """
@@ -124,10 +126,14 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         float: The average validation loss.
         """
         sam_model.eval()
-        validation_loss = 0
+        validation_loss = []
         with torch.no_grad():
             for input_image, data in validation_dataset:
+                if data is None:
+                    continue
                 gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
+                if len(labels) == 0:
+                    continue
                 input_image = input_image.to(predictor.device)
                 input_image = input_image.unsqueeze(0)
                 for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
@@ -135,32 +141,23 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                     image_embedding = sam_model.image_encoder(input_image_postprocess)
                     binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
                     loss = get_loss(sam_model, binary_mask, curr_gt_mask)
-                    validation_loss += loss.item()
+                    validation_loss.append(loss.item())
         sam_model.train()
-        return validation_loss / len(validation_dataset)
+        # TODO : fix validation loss calculation to np.mean
+        return np.mean(validation_loss)
     
     best_val_loss = float('inf')
     epochs_without_improvement = 0
+    
 
     for epoch in range(epoches):
+        singleImageLoggingFlag = True
         for index, (input_image, data) in enumerate(train_dataset):
+            if data is None:
+                continue
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
-            
-            # Filter bounding boxes based on size
-            th_size_boxes = []
-            th_size_labels = []
-            th_size_gt_mask = []
-
-            for i, box in enumerate(bboxes):
-                curr_size = calculate_rect_size(box)
-                if curr_size > 1000 and curr_size < 130880:
-                    th_size_boxes.append(box)
-                    th_size_labels.append(labels[i])
-                    th_size_gt_mask.append(gt_mask[i])
-
-            bboxes =  th_size_boxes
-            labels = th_size_labels
-            gt_mask = th_size_gt_mask
+            if len(labels) == 0:
+                continue
 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
@@ -177,12 +174,23 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 loss.backward()
                 optimizer.step()
 
-                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss})
+                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss.item()})
+                
+                if singleImageLoggingFlag:
+                    visualize_and_save(input_image, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
+                    wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
+                    singleImageLoggingFlag = False
+
                 del loss, binary_mask, image_embedding, input_image_postprocess
                 torch.cuda.empty_cache()
+
+
                 
         val_loss = validate_model(validation_dataset)
-        wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Validation Loss": val_loss})
+
+        wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
+                   f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 
+                   f"Iteration_{iter_num + 1}/lr": lr})
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

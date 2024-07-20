@@ -30,7 +30,7 @@ def calculate_rect_size(bbox):
     Returns:
     float: Size of the rectangle.
     """
-    x1, y1, x2, y2 = bbox[0].cpu().numpy()
+    x1, y1, x2, y2 = bbox
     width = x2 - x1
     height = y2 - y1
     return width * height
@@ -55,10 +55,13 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
         gt_mask.append(mask)
     gt_mask = torch.tensor(np.array(gt_mask)).to(predictor.device)
 
+    keep_indices = []
     bboxes = []
-    for item in data:
+    for i, item in enumerate(data):
         bbox = item['bbox']
         bboxes.append(bbox)
+        if calculate_rect_size(bbox) > 41943 and calculate_rect_size(bbox) < 1048576:
+            keep_indices.append(i)
     bboxes = torch.tensor(np.array(bboxes), device=predictor.device)
     bboxes = predictor.transform.apply_boxes_torch(bboxes, input_image_size)
 
@@ -66,6 +69,10 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     for item in data:
         label = item['label']
         labels.append(label)
+    
+    bboxes = bboxes[keep_indices]
+    gt_mask = gt_mask[keep_indices]
+    labels = [labels[i] for i in keep_indices]
     
     gt_mask_split = torch.split(gt_mask, batch_size, dim=0)
     bboxes_split = torch.split(bboxes, batch_size, dim=0)
