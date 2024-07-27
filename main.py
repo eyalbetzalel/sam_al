@@ -7,7 +7,7 @@ batch_size = 1
 max_iterations = 7
 query_strategy = random_query_strategy
 training_epoch_per_iteration = 2000
-lr = 1e-6
+lr = 1e-5
 
 # Setup SAM model and predictor
 predictor, sam_model = setup_sam_model()

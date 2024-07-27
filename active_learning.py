@@ -35,8 +35,8 @@ class ActiveLearningPlatform:
         self.lr = lr
         self.max_iterations = max_active_learning_iterations
         self.query_strategy = query_strategy
-        # self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='random')
-        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='fixed') # TODO: Change sampling method to random
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='random')
+        # self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='fixed')s
         
     def train_model(self):
         """
@@ -114,7 +114,8 @@ class ActiveLearningPlatform:
         Returns:
         torch.Tensor: Loss value.
         """
-        loss_fn = DiceLoss(smooth=1)
+        # loss_fn = DiceLoss(smooth=1)
+        loss_fn = torch.nn.MSELoss()
         return loss_fn(binary_mask, gt_mask.float())
     
     def test_model(self):
@@ -254,7 +255,7 @@ class ActiveLearningDataset:
         """
         return Subset(self.dataset, self.labeled_indices)
 
-    def get_unlabeled_subset(self):
+    def get_unlabeled_subset(self): 
         """
         Returns a Subset of the dataset for unlabeled samples.
 

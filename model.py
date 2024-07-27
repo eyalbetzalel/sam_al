@@ -37,6 +37,105 @@ class DiceLoss(nn.Module):
         
         return 1 - dice.mean()
 
+
+class JaccardLoss(nn.Module):
+    def __init__(self, smooth=1):
+        """
+        Initializes the JaccardLoss module.
+
+        Parameters:
+        smooth (float): Smoothing factor to avoid division by zero.
+        """
+        super(JaccardLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, preds, labels):
+        """
+        Forward pass for Jaccard loss computation.
+
+        Parameters:
+        preds (torch.Tensor): Predicted masks.
+        labels (torch.Tensor): Ground truth masks.
+
+        Returns:
+        torch.Tensor: Jaccard loss value.
+        """
+        preds = preds.contiguous()
+        labels = labels.contiguous()
+
+        intersection = (preds * labels).sum(dim=(1, 2))
+        union = preds.sum(dim=(1, 2)) + labels.sum(dim=(1, 2)) - intersection
+        jaccard = (intersection + self.smooth) / (union + self.smooth)
+        
+        return 1 - jaccard.mean()
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        """
+        Initializes the FocalLoss module.
+
+        Parameters:
+        alpha (float): Balancing factor.
+        gamma (float): Focusing parameter.
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, preds, labels):
+        """
+        Forward pass for Focal loss computation.
+
+        Parameters:
+        preds (torch.Tensor): Predicted masks.
+        labels (torch.Tensor): Ground truth masks.
+
+        Returns:
+        torch.Tensor: Focal loss value.
+        """
+        logpt = -self.cross_entropy_loss(preds, labels)
+        pt = torch.exp(logpt)
+        focal_loss = -((1 - pt) ** self.gamma) * logpt
+        return self.alpha * focal_loss.mean()
+
+class TverskyLoss(nn.Module):
+    def __init__(self, alpha=0.5, beta=0.5, smooth=1):
+        """
+        Initializes the TverskyLoss module.
+
+        Parameters:
+        alpha (float): Weight for false positives.
+        beta (float): Weight for false negatives.
+        smooth (float): Smoothing factor to avoid division by zero.
+        """
+        super(TverskyLoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.smooth = smooth
+
+    def forward(self, preds, labels):
+        """
+        Forward pass for Tversky loss computation.
+
+        Parameters:
+        preds (torch.Tensor): Predicted masks.
+        labels (torch.Tensor): Ground truth masks.
+
+        Returns:
+        torch.Tensor: Tversky loss value.
+        """
+        preds = preds.contiguous()
+        labels = labels.contiguous()
+
+        true_pos = (preds * labels).sum(dim=(1, 2))
+        false_neg = (labels * (1 - preds)).sum(dim=(1, 2))
+        false_pos = ((1 - labels) * preds).sum(dim=(1, 2))
+        
+        tversky = (true_pos + self.smooth) / (true_pos + self.alpha * false_pos + self.beta * false_neg + self.smooth)
+        
+        return 1 - tversky.mean()
+
 def setup_sam_model():
     """
     Setup the SAM model and predictor.
@@ -71,11 +170,44 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     None
     """
     # Setup optimizer, loss function, and scheduler
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=lr)
-    loss_fn = DiceLoss(smooth=1) 
+    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=lr)
+    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()), lr=lr)
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters()), lr=lr)
+    loss_fn = DiceLoss(smooth=1)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
+    
+    def clip_mask_to_bbox(mask, bbox, delta=0.1):
+        
+        """
+        Clip the mask to the bounding box with an allowed extension of delta percentage.
 
-    def compute_loss_and_mask(model, image_embedding, bbox, predictor_device, input_size, original_image_size):
+        Parameters:
+        mask (torch.Tensor): Predicted mask.
+        bbox (torch.Tensor): Bounding box tensor.
+        delta (float): Percentage by which the mask is allowed to extend beyond the bounding box.
+
+        Returns:
+        torch.Tensor: Clipped mask.
+        """
+        height, width = mask.shape[-2:]
+        bbox = bbox.cpu().numpy().astype(int).tolist()[0]
+        # Calculate the extended bounding box dimensions
+        x_min, y_min, x_max, y_max = 2*bbox[0], 2*bbox[1], 2*bbox[2], 2*bbox[3]
+        box_width = x_max - x_min
+        box_height = y_max - y_min
+
+        x_min_extended = max(0, x_min - delta * box_width)
+        y_min_extended = max(0, y_min - delta * box_height)
+        x_max_extended = min(width, x_max + delta * box_width)
+        y_max_extended = min(height, y_max + delta * box_height)
+
+        # Create the clipped mask
+        clipped_mask = torch.zeros_like(mask)
+        clipped_mask[:, int(y_min_extended):int(y_max_extended), int(x_min_extended):int(x_max_extended)] = mask[:, int(y_min_extended):int(y_max_extended), int(x_min_extended):int(x_max_extended)]
+        
+        return clipped_mask
+
+    def compute_loss_and_mask(model, image_embedding, bbox, predictor_device, input_size, original_image_size, delta=0.1):
         """
         Compute the loss and mask for a given image embedding and bounding box.
 
@@ -84,6 +216,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         image_embedding (torch.Tensor): Image embedding tensor.
         bbox (torch.Tensor): Bounding box tensor.
         predictor_device (str): Device to perform computation on.
+        delta (float): Percentage by which the mask is allowed to extend beyond the bounding box.
 
         Returns:
         torch.Tensor: Binary mask.
@@ -99,7 +232,11 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         if len(binary_mask.shape) == 2:
             binary_mask = binary_mask.unsqueeze(0)
 
+        # Clip the mask to the bounding box with an extension delta
+        binary_mask = clip_mask_to_bbox(binary_mask, bbox, delta)
+
         return binary_mask
+
 
     def get_loss(model, binary_mask, gt_mask):
         """
@@ -145,11 +282,10 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                     loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                     validation_loss.append(loss.item())
         sam_model.train()
-        # TODO : fix validation loss calculation to np.mean
         return np.mean(validation_loss)
     
-    # best_val_loss = float('inf')
-    best_val_loss = 100000 # TODO : DELETE THIS LINE
+    best_val_loss = float('inf')
+    # best_val_loss = 100000
     epochs_without_improvement = 0
     
 
@@ -170,7 +306,8 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 input_image_postprocess = sam_model.preprocess(input_image)
-                image_embedding = sam_model.image_encoder(input_image_postprocess)
+                with torch.no_grad():
+                    image_embedding = sam_model.image_encoder(input_image_postprocess)
 
                 binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                 loss = get_loss(sam_model, binary_mask, curr_gt_mask)
@@ -190,8 +327,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
 
                 
-        # val_loss = validate_model(validation_dataset) # TODO : Return THIS LINE
-        val_loss = best_val_loss - 1 # TODO : DELETE THIS LINE
+        val_loss = validate_model(validation_dataset)
 
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
                    f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 
