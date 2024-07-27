@@ -75,7 +75,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     loss_fn = DiceLoss(smooth=1) 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
 
-    def compute_loss_and_mask(model, image_embedding, bbox, predictor_device):
+    def compute_loss_and_mask(model, image_embedding, bbox, predictor_device, input_size, original_image_size):
         """
         Compute the loss and mask for a given image embedding and bounding box.
 
@@ -127,6 +127,8 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         """
         sam_model.eval()
         validation_loss = []
+        input_size = (512, 1024)
+        original_image_size = (1024, 2048)
         with torch.no_grad():
             for input_image, data in validation_dataset:
                 if data is None:
@@ -139,20 +141,22 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
                     input_image_postprocess = sam_model.preprocess(input_image)
                     image_embedding = sam_model.image_encoder(input_image_postprocess)
-                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                     loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                     validation_loss.append(loss.item())
         sam_model.train()
         # TODO : fix validation loss calculation to np.mean
         return np.mean(validation_loss)
     
-    best_val_loss = float('inf')
+    # best_val_loss = float('inf')
+    best_val_loss = 100000 # TODO : DELETE THIS LINE
     epochs_without_improvement = 0
     
 
     for epoch in range(epoches):
         singleImageLoggingFlag = True
         for index, (input_image, data) in enumerate(train_dataset):
+            (input_image, data) = train_dataset[0]
             if data is None:
                 continue
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
@@ -168,7 +172,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 input_image_postprocess = sam_model.preprocess(input_image)
                 image_embedding = sam_model.image_encoder(input_image_postprocess)
 
-                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device)
+                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                 loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                 optimizer.zero_grad()
                 loss.backward()
@@ -186,7 +190,8 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
 
                 
-        val_loss = validate_model(validation_dataset)
+        # val_loss = validate_model(validation_dataset) # TODO : Return THIS LINE
+        val_loss = best_val_loss - 1 # TODO : DELETE THIS LINE
 
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
                    f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 

@@ -35,8 +35,9 @@ class ActiveLearningPlatform:
         self.lr = lr
         self.max_iterations = max_active_learning_iterations
         self.query_strategy = query_strategy
-        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='random')
-
+        # self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='random')
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.1, sampling_method='fixed') # TODO: Change sampling method to random
+        
     def train_model(self):
         """
         Train the model on the current labeled dataset.
@@ -219,7 +220,7 @@ class ActiveLearningDataset:
         unlabeled_indices (list): Indices of the unlabeled dataset.
     """
     
-    def __init__(self, dataset, train_percent, sampling_method='random', fixed_index=0):
+    def __init__(self, dataset, train_percent, sampling_method='random', fixed_index=7):
         self.dataset = dataset
         self.train_percent = train_percent
         self.sampling_method = sampling_method

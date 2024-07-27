@@ -3,10 +3,10 @@ from active_learning import ActiveLearningPlatform, random_query_strategy
 from importCityScapesToDataloader import train_dataset, val_dataset, test_dataset
 
 # Example Usage
-batch_size = 8
+batch_size = 1
 max_iterations = 7
 query_strategy = random_query_strategy
-training_epoch_per_iteration = 20
+training_epoch_per_iteration = 2000
 lr = 1e-6
 
 # Setup SAM model and predictor
