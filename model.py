@@ -136,6 +136,31 @@ class TverskyLoss(nn.Module):
         
         return 1 - tversky.mean()
 
+def sam_demo_code(image, input_box, predictor):
+    """
+    Run the SAM model on the given image and bounding box.
+
+    Parameters:
+    image (torch.Tensor): Image tensor.
+    bbox (torch.Tensor): Bounding box tensor.
+    sam_model (SAM): The SAM model.
+    predictor (SamPredictor): The SAM predictor.
+
+    Returns:
+    torch.Tensor: Binary mask.
+    """
+    # input_box = np.array([600, 1100, 2100, 1800])
+    # image_path = '/kaggle/input/happy-whale-and-dolphin/train_images/00177f3c614d1e.jpg'
+    # image_array = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+    predictor.set_image(image)
+    masks, _, _ = predictor.predict(
+        point_coords=None,
+        point_labels=None,
+        box=input_box[None, :],
+        multimask_output=False,
+    )
+    return masks[0]
+
 def setup_sam_model():
     """
     Setup the SAM model and predictor.
@@ -237,7 +262,6 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
         return binary_mask
 
-
     def get_loss(model, binary_mask, gt_mask):
         """
         Compute the loss between the binary mask and ground truth mask.
@@ -293,6 +317,14 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         singleImageLoggingFlag = True
         for index, (input_image, data) in enumerate(train_dataset):
             (input_image, data) = train_dataset[0]
+
+            ########## Demo Sanity Check - 1 ##########
+
+            input_demo = input_image
+            predictor_demo, _ = setup_sam_model()
+
+            ###########################################
+
             if data is None:
                 continue
             gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
@@ -305,6 +337,13 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
             input_image = input_image.unsqueeze(0)
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
+                
+                ########## Demo Sanity Check - 2 ##########
+                v=0
+                mask_demo = sam_demo_code(input_demo, curr_bbox, predictor_demo)
+                v=0
+                ###########################################
+                
                 input_image_postprocess = sam_model.preprocess(input_image)
                 with torch.no_grad():
                     image_embedding = sam_model.image_encoder(input_image_postprocess)
