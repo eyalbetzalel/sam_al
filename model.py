@@ -5,6 +5,7 @@ import wandb
 from itertools import chain
 import torch.nn as nn
 import numpy as np
+from torch.nn import functional as F
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -149,17 +150,75 @@ def sam_demo_code(image, input_box, predictor):
     Returns:
     torch.Tensor: Binary mask.
     """
-    # input_box = np.array([600, 1100, 2100, 1800])
-    # image_path = '/kaggle/input/happy-whale-and-dolphin/train_images/00177f3c614d1e.jpg'
-    # image_array = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+    def convert_tensor_to_image(tensor: torch.Tensor, image_format: str = "RGB") -> np.ndarray:
+        """
+        Converts a torch tensor with values in the range [0, 1] to a NumPy array
+        in the format expected by the set_image function.
+
+        Arguments:
+            tensor (torch.Tensor): The input image tensor in CHW format with pixel values in [0, 1].
+            image_format (str): The color format of the image, in ['RGB', 'BGR'].
+
+        Returns:
+            np.ndarray: The converted image in HWC uint8 format, with pixel values in [0, 255].
+        """
+        # Check if tensor is in CHW format
+        if tensor.ndimension() != 3 or tensor.size(0) not in {1, 3}:
+            raise ValueError("Input tensor must be in CHW format with 1 or 3 channels.")
+
+        # Convert tensor to numpy array
+        image_np = tensor.cpu().numpy()
+
+        # Scale values to [0, 255] and convert to uint8
+        image_np = (image_np * 255).astype(np.uint8)
+
+        # Convert from CHW to HWC format
+        image_np = np.transpose(image_np, (1, 2, 0))
+
+        # Handle grayscale images (1 channel)
+        if image_np.shape[2] == 1:
+            image_np = np.repeat(image_np, 3, axis=2)
+
+        if image_format == "BGR":
+            image_np = image_np[..., ::-1]
+
+        return image_np
+    
+    def boolean_array_to_tensor(boolean_array: np.ndarray) -> torch.Tensor:
+        """
+        Converts a boolean NumPy array to a PyTorch tensor with values 0 and 1.
+
+        Arguments:
+            boolean_array (np.ndarray): The input boolean array.
+
+        Returns:
+            torch.Tensor: The converted PyTorch tensor with values 0 and 1.
+        """
+        if boolean_array.dtype != bool:
+            raise ValueError("Input array must be of boolean type.")
+        
+        # Convert boolean array to integer array (0 and 1)
+        int_array = boolean_array.astype(np.int32)
+
+        # Convert integer array to PyTorch tensor
+        tensor = torch.from_numpy(int_array)
+
+        return tensor
+
+    image = convert_tensor_to_image(image)
     predictor.set_image(image)
+    input_box = input_box.cpu().numpy().astype(int)[0]
+    input_box = input_box * 2
     masks, _, _ = predictor.predict(
         point_coords=None,
         point_labels=None,
         box=input_box[None, :],
         multimask_output=False,
     )
-    return masks[0]
+
+    mask_demo = boolean_array_to_tensor(masks[0])
+
+    return mask_demo
 
 def setup_sam_model():
     """
@@ -334,30 +393,43 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
             input_image = input_image.to(predictor.device)
             original_image_size = (1024, 2048)
             input_size = (512, 1024)
-            input_image = input_image.unsqueeze(0)
    
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 
                 ########## Demo Sanity Check - 2 ##########
-                v=0
+
                 mask_demo = sam_demo_code(input_demo, curr_bbox, predictor_demo)
-                v=0
+
                 ###########################################
-                
-                input_image_postprocess = sam_model.preprocess(input_image)
+                input_image = input_image.permute(1, 2 , 0)
+                input_image = input_image.cpu().numpy()
+                input_image = input_image * 255
+                input_image = input_image.astype(np.uint8)
+                input_image = predictor.transform_image(input_image) # change shape 2048 --> 1024
+                input_image_torch = torch.as_tensor(input_image, device=predictor.device) # uint8 0:255 values - torch.Size([512, 1024, 3]) 
+                input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :] # uint8 0:255 values - torch.Size([1, 3, 512, 1024])
+                input_image_postprocess = sam_model.preprocess(input_image_torch)
                 with torch.no_grad():
                     image_embedding = sam_model.image_encoder(input_image_postprocess)
 
                 binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                 loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                 optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                # loss.backward()
+                # optimizer.step()
 
                 wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss.item()})
                 
                 if singleImageLoggingFlag:
-                    visualize_and_save(input_image, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
+                    # Define the target size
+                    target_size = (1024, 2048)
+
+                    # Interpolate the image to the target size
+                    input_image_torch = input_image_torch.float() / 255.0
+                    input_image_torch = F.interpolate(input_image_torch, size=target_size, mode='bilinear', align_corners=False)
+
+                    visualize_and_save(input_image_torch, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
+                    visualize_and_save(input_image_torch, curr_gt_mask, mask_demo[None,:,:], curr_bbox, filename="test_sam_demo.png")
                     wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
                     singleImageLoggingFlag = False
 

@@ -173,6 +173,7 @@ class ActiveLearningPlatform:
         """
         wandb.init(
             project="ActiveLearningSAM",
+            mode="disabled",
         )
         num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
         for iteration in range(self.max_iterations):
