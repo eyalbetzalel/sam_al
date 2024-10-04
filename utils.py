@@ -50,24 +50,27 @@ def get_values_from_data_iter(data, batch_size, predictor, input_image_size=(102
     """
     gt_mask = []
     for item in data:
-        polygon = item['polygon']
-        mask = polygon_to_mask(polygon)
+        mask = item['mask']
         gt_mask.append(mask)
-    gt_mask = torch.tensor(np.array(gt_mask)).to(predictor.device)
+
+    if len(gt_mask) == 0:
+        return None, None, None
+    
+    gt_mask = torch.stack(gt_mask, dim=0).to(predictor.device)
 
     keep_indices = []
     bboxes = []
     for i, item in enumerate(data):
         bbox = item['bbox']
         bboxes.append(bbox)
-        if calculate_rect_size(bbox) > 41943 and calculate_rect_size(bbox) < 1048576:
+        if calculate_rect_size(bbox) > 10000 and calculate_rect_size(bbox) < 1048576:
             keep_indices.append(i)
-    bboxes = torch.tensor(np.array(bboxes), device=predictor.device)
+    bboxes = torch.stack(bboxes, dim=0).to(predictor.device)
     bboxes = predictor.transform.apply_boxes_torch(bboxes, input_image_size)
 
     labels = []
     for item in data:
-        label = item['label']
+        label = item['category']
         labels.append(label)
     
     bboxes = bboxes[keep_indices]

@@ -335,7 +335,25 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         """
         return loss_fn(binary_mask, gt_mask.float())
 
-    def validate_model(validation_dataset):
+    def calculate_iou(mask1, mask2):
+        # Move masks from CUDA to CPU
+        mask1 = mask1.cpu()
+        mask2 = mask2.cpu()
+        
+        # Ensure masks are binary
+        mask1 = (mask1 > 0).float()
+        mask2 = (mask2 > 0).float()
+        
+        # Calculate intersection and union
+        intersection = torch.sum(mask1 * mask2)
+        union = torch.sum(mask1) + torch.sum(mask2) - intersection
+        
+        # Compute IoU
+        iou = intersection / union
+        
+        return iou.item()
+
+    def validate_model(validation_dataset, epoch):
         """
         Validate the model on the validation dataset.
 
@@ -349,58 +367,23 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         validation_loss = []
         input_size = (512, 1024)
         original_image_size = (1024, 2048)
+        class_losses = {}
+        class_ious = {}
         with torch.no_grad():
             for input_image, data in validation_dataset:
                 if data is None:
                     continue
                 gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
+                
+                if labels == None:
+                    continue
                 if len(labels) == 0:
                     continue
+
                 input_image = input_image.to(predictor.device)
-                input_image = input_image.unsqueeze(0)
-                for curr_gt_mask, curr_bbox in zip(gt_mask, bboxes):
-                    input_image_postprocess = sam_model.preprocess(input_image)
-                    image_embedding = sam_model.image_encoder(input_image_postprocess)
-                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
-                    loss = get_loss(sam_model, binary_mask, curr_gt_mask)
-                    validation_loss.append(loss.item())
-        sam_model.train()
-        return np.mean(validation_loss)
-    
-    best_val_loss = float('inf')
-    # best_val_loss = 100000
-    epochs_without_improvement = 0
-    
+                original_image_size = (1024, 2048)
+                input_size = (512, 1024)
 
-    for epoch in range(epoches):
-        singleImageLoggingFlag = True
-        for index, (input_image, data) in enumerate(train_dataset):
-            (input_image, data) = train_dataset[0]
-
-            ########## Demo Sanity Check - 1 ##########
-
-            input_demo = input_image
-            predictor_demo, _ = setup_sam_model()
-
-            ###########################################
-
-            if data is None:
-                continue
-            gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
-            if len(labels) == 0:
-                continue
-
-            input_image = input_image.to(predictor.device)
-            original_image_size = (1024, 2048)
-            input_size = (512, 1024)
-   
-            for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
-                
-                ########## Demo Sanity Check - 2 ##########
-
-                mask_demo = sam_demo_code(input_demo, curr_bbox, predictor_demo)
-
-                ###########################################
                 input_image = input_image.permute(1, 2 , 0)
                 input_image = input_image.cpu().numpy()
                 input_image = input_image * 255
@@ -411,34 +394,125 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 input_image_postprocess = sam_model.preprocess(input_image_torch)
                 with torch.no_grad():
                     image_embedding = sam_model.image_encoder(input_image_postprocess)
+                # input_image = input_image.to(predictor.device)
+                # input_image = input_image.unsqueeze(0)
+                # input_image_postprocess = sam_model.preprocess(input_image)
+                # image_embedding = sam_model.image_encoder(input_image_postprocess)
 
-                binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
-                loss = get_loss(sam_model, binary_mask, curr_gt_mask)
-                optimizer.zero_grad()
-                # loss.backward()
-                # optimizer.step()
+                for curr_gt_mask, curr_bbox, curr_label in zip(gt_mask, bboxes, labels):
+                    binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
+                    loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+                    iou = calculate_iou(curr_gt_mask, binary_mask)
+                    validation_loss.append(loss.item())
 
-                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss.item()})
+                    # Calculate class-wise losses and IoUs:
+                    
+                    for label in labels:
+                        label_str = str(label)
+                        if label_str not in class_losses:
+                            class_losses[label_str] = []
+                            class_ious[label_str] = []
+                        class_losses[label_str].append(loss.cpu().numpy().item())
+                        class_ious[label_str].append(iou)
+        class_stats = {}
+        for label_str in class_losses:
+            mean_loss = np.mean(class_losses[label_str])
+            std_loss = np.std(class_losses[label_str])
+            mean_iou = np.mean(class_ious[label_str])
+            std_iou = np.std(class_ious[label_str])
+            
+            class_stats[label_str] = {
+                "mean_loss": mean_loss,
+                "std_loss": std_loss,
+                "mean_iou": mean_iou,
+                "std_iou": std_iou
+            }
+
+        # Log the results to wandb
+        wandb.log({"epoch": epoch, "class_stats": class_stats})
+
+        sam_model.train()
+        return np.mean(validation_loss)
+    
+    best_val_loss = float('inf')
+    # best_val_loss = 100000
+    epochs_without_improvement = 0
+    
+
+    for epoch in range(epoches):
+        # singleImageLoggingFlag = True
+        # for index, (input_image, data) in enumerate(train_dataset):
+        #     # (input_image, data) = train_dataset[0]
+
+        #     ########## Demo Sanity Check - 1 ##########
+
+        #     # input_demo = input_image
+        #     # predictor_demo, _ = setup_sam_model()
+
+        #     ###########################################
+
+        #     if data is None:
+        #         continue
+            
+        #     gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
+            
+        #     if labels == None:
+        #             continue
+        #     if len(labels) == 0:
+        #         continue
+
+        #     input_image = input_image.to(predictor.device)
+        #     original_image_size = (1024, 2048)
+        #     input_size = (512, 1024)
+
+        #     input_image = input_image.permute(1, 2 , 0)
+        #     input_image = input_image.cpu().numpy()
+        #     input_image = input_image * 255
+        #     input_image = input_image.astype(np.uint8)
+        #     input_image = predictor.transform_image(input_image) # change shape 2048 --> 1024
+        #     input_image_torch = torch.as_tensor(input_image, device=predictor.device) # uint8 0:255 values - torch.Size([512, 1024, 3]) 
+        #     input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :] # uint8 0:255 values - torch.Size([1, 3, 512, 1024])
+        #     input_image_postprocess = sam_model.preprocess(input_image_torch)
+        #     with torch.no_grad():
+        #         image_embedding = sam_model.image_encoder(input_image_postprocess)
+
+   
+        #     for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 
-                if singleImageLoggingFlag:
-                    # Define the target size
-                    target_size = (1024, 2048)
+        #         ########## Demo Sanity Check - 2 ##########
 
-                    # Interpolate the image to the target size
-                    input_image_torch = input_image_torch.float() / 255.0
-                    input_image_torch = F.interpolate(input_image_torch, size=target_size, mode='bilinear', align_corners=False)
+        #         # mask_demo = sam_demo_code(input_demo, curr_bbox, predictor_demo)
 
-                    visualize_and_save(input_image_torch, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
-                    visualize_and_save(input_image_torch, curr_gt_mask, mask_demo[None,:,:], curr_bbox, filename="test_sam_demo.png")
-                    wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
-                    singleImageLoggingFlag = False
+        #         ###########################################
 
-                del loss, binary_mask, image_embedding, input_image_postprocess
-                torch.cuda.empty_cache()
+
+        #         binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
+        #         loss = get_loss(sam_model, binary_mask, curr_gt_mask)
+        #         optimizer.zero_grad()
+        #         # loss.backward()
+        #         # optimizer.step()
+
+        #         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss.item()})
+                
+        #         if singleImageLoggingFlag:
+        #             # Define the target size
+        #             target_size = (1024, 2048)
+
+        #             # Interpolate the image to the target size
+        #             input_image_torch = input_image_torch.float() / 255.0
+        #             input_image_torch = F.interpolate(input_image_torch, size=target_size, mode='bilinear', align_corners=False)
+
+        #             visualize_and_save(input_image_torch, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
+        #             # visualize_and_save(input_image_torch, curr_gt_mask, mask_demo[None,:,:], curr_bbox, filename="test_sam_demo.png")
+        #             wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
+        #             #singleImageLoggingFlag = False
+
+        #     del loss, binary_mask, image_embedding, input_image_postprocess
+        #     torch.cuda.empty_cache()
 
 
                 
-        val_loss = validate_model(validation_dataset)
+        val_loss = validate_model(validation_dataset, epoch)
 
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
                    f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 
