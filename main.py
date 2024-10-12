@@ -5,7 +5,7 @@ from importCityScapesToDataloader import train_dataset, val_dataset, test_datase
 # Example Usage
 batch_size = 1
 max_iterations = 7
-query_strategy = random_query_strategy
+query_strategy = 'oracle' # 'random' or 'oracle'
 training_epoch_per_iteration = 2000
 lr = 1e-5
 
