@@ -520,7 +520,12 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
 
                 
-        val_loss = validate_model(validation_dataset, epoch)
+        # val_loss = validate_model(validation_dataset, epoch)
+        ################## TODO : DELETE THIS LINE ##################
+        val_loss = 0.1
+        ################## TODO : DELETE THIS LINE ##################
+
+
 
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
                    f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 

@@ -6,7 +6,7 @@ from importCityScapesToDataloader import train_dataset, val_dataset, test_datase
 batch_size = 1
 max_iterations = 7
 query_strategy = 'oracle' # 'random' or 'oracle'
-training_epoch_per_iteration = 2000
+training_epoch_per_iteration = 1
 lr = 1e-5
 
 # Setup SAM model and predictor
@@ -27,7 +27,7 @@ active_learning_platform = ActiveLearningPlatform(
 )
 
 # Run the active learning process
-active_learning_platform.run(precent_from_dataset_to_query_each_iteration=0.1)
+active_learning_platform.run(precent_from_dataset_to_query_each_iteration=0.001)
 
 # TODO: Implement a more advanced query strategy for active learning.
 # TODO: Implement a method to load a trained model from disk.

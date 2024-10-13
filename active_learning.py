@@ -14,14 +14,15 @@ class ActiveLearningPlatform:
         self.model = model
         self.predictor = predictor
         self.validation_dataset = val_dataset
+        initial_train_dataset = Subset(initial_train_dataset, range(10))
         self.test_dataset = Subset(test_dataset, range(1000))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
         self.lr = lr
         self.max_iterations = max_active_learning_iterations
         self.query_strategy = query_strategy
-        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.01, sampling_method='random')
-        self.loss_fn = DiceLoss(smooth=1)  # Initialize the loss function
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.001, sampling_method='random')
+        self.loss_fn = torch.nn.MSELoss()  # Initialize the loss function
 
     def train_model(self):
         # Updated train_model method as previously described
@@ -104,6 +105,9 @@ class ActiveLearningPlatform:
                 if data is None:
                     continue
                 gt_masks, bboxes, labels = get_values_from_data_iter(data, self.batch_size, self.predictor)
+                
+                if labels == None:
+                    continue
                 if len(labels) == 0:
                     continue
 
@@ -148,6 +152,12 @@ class ActiveLearningPlatform:
         sorted_indices_in_subset = sorted(iou_scores, key=iou_scores.get)
 
         # Select the indices of the num_samples lowest IoU scores
+        
+        ################## TODO : DELETE THIS LINE ##################
+        if num_samples == 0:
+            num_samples = 2
+        ################## TODO : DELETE THIS LINE ##################
+
         selected_indices_in_subset = sorted_indices_in_subset[:num_samples]
 
         # Map indices in the unlabeled_subset back to indices in the dataset
@@ -232,24 +242,25 @@ class ActiveLearningPlatform:
         # Updated run method as previously described
         wandb.init(
             project="ActiveLearningSAM",
-            # mode="disabled",
+            mode="disabled",
         )
         for iteration in range(self.max_iterations):
             self.iteration = iteration
-            self.train_model()
+            if iteration > 0:
+                self.train_model()
             print(f"Iteration {iteration}/{self.max_iterations} complete")    
 
             total_percent_so_far = precent_from_dataset_to_query_each_iteration * iteration
-            test_loss, test_iou = self.test_model()
-            wandb.log({
-                "Test IoU": test_iou, 
-                "Test Loss": test_loss,
-                "[%] Dataset": total_percent_so_far
-            })
+            # test_loss, test_iou = self.test_model()
+            # wandb.log({
+            #     "Test IoU": test_iou, 
+            #     "Test Loss": test_loss,
+            #     "[%] Dataset": total_percent_so_far
+            # })
 
             num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
             queried_indices = self.query_labels(num_images_to_query)
-            self.update_datasets(queried_indices)
+            self.active_learning_dataset.update_labeled_set(queried_indices)
           
         torch.save(self.model.state_dict(), "model-directory/final_sam_model.pth")
         wandb.finish()
