@@ -6,6 +6,11 @@ from itertools import chain
 import torch.nn as nn
 import numpy as np
 from torch.nn import functional as F
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+from utils import WarmupScheduler
+from torch.nn.utils import clip_grad_norm_
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -235,7 +240,7 @@ def setup_sam_model():
     predictor = SamPredictor(sam)
     return predictor, sam
 
-def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, iter_num=0, lr=1e-5):
+def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, iter_num=0, lr=1e-5, warmup_steps=5, max_grad_norm=1.0):
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -255,10 +260,14 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     """
     # Setup optimizer, loss function, and scheduler
     # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=lr)
-    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()), lr=lr)
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters()), lr=lr)
+    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()), lr=lr)
+    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters()), lr=lr)
     loss_fn = DiceLoss(smooth=1)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
+
+    # Initialize the warmup scheduler
+    initial_lr = lr * 0.1  # Starting small, typically 10% of the target lr
+    warmup_scheduler = WarmupScheduler(optimizer, warmup_steps=warmup_steps, initial_lr=initial_lr, final_lr=lr)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.8)
     
     def clip_mask_to_bbox(mask, bbox, delta=0.1):
         
@@ -405,11 +414,11 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                     #     target_size = (1024, 2048)
 
                     #     # Interpolate the image to the target size
-                    #     input_image_torch = input_image_torch.float() / 255.0
-                    #     input_image_torch = F.interpolate(input_image_torch, size=target_size, mode='bilinear', align_corners=False)
+                    #     input_image_torch_vis = input_image_torch.float() / 255.0
+                    #     input_image_torch_vis = F.interpolate(input_image_torch_vis, size=target_size, mode='bilinear', align_corners=False)
 
                         
-                    #     visualize_and_save(input_image_torch, curr_gt_mask, binary_mask, curr_bbox, filename=f"validation_set_bad_example_iou_{iou}.png")
+                    #     visualize_and_save(input_image_torch_vis, curr_gt_mask, binary_mask, curr_bbox, filename=f"valid_set_{curr_label}_iou_{iou}.png")
                     
                     validation_loss.append(loss.item())
 
@@ -439,6 +448,22 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         # # Log the results to wandb
         # wandb.log({"epoch": epoch, "class_stats": class_stats})
 
+        
+        # # Convert dictionary to DataFrame
+        # df = pd.DataFrame(class_stats)
+        
+        # # Format DataFrame to 3 decimal points
+        # df = df.round(3)
+        
+        # # Create a matplotlib figure
+        # plt.figure(figsize=(10, 4))
+        
+        # # Create a table plot
+        # sns.heatmap(df, annot=True, fmt=".3f", cmap="YlGnBu", cbar=False, linewidths=.5)
+        
+        # # Save the plot as a PNG file
+        # plt.savefig('class_stats_table.png')
+        
         sam_model.train()
         return np.mean(validation_loss)
     
@@ -448,16 +473,16 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     
 
     for epoch in range(epoches):
-        # singleImageLoggingFlag = True
+        singleImageLoggingFlag = True
         for index, (input_image, data) in enumerate(train_dataset):
-            # (input_image, data) = train_dataset[0]
+            (input_image, data) = train_dataset[0]
 
-            ########## Demo Sanity Check - 1 ##########
+            ######### Demo Sanity Check - 1 ##########
 
             # input_demo = input_image
             # predictor_demo, _ = setup_sam_model()
 
-            ###########################################
+            ##########################################
 
             if data is None:
                 continue
@@ -498,9 +523,12 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                 optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                            
+                total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in sam_model.parameters() if p.grad is not None])) # Calculate gradient norm before clipping
+                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Grad Norm Before Clipping": total_norm.item()})
 
-                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Train Loss": loss.item()})
+                clip_grad_norm_(sam_model.parameters(), max_grad_norm) # Apply gradient clippinp
+                optimizer.step()
                 
                 # if singleImageLoggingFlag:
                 #     # Define the target size
@@ -520,16 +548,13 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
 
                 
-        # val_loss = validate_model(validation_dataset, epoch)
-        ################## TODO : DELETE THIS LINE ##################
-        val_loss = 0.1
-        ################## TODO : DELETE THIS LINE ##################
+        val_loss = validate_model(validation_dataset, epoch)
 
-
-
+        current_lr = optimizer.param_groups[0]['lr']
+ 
         wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
                    f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 
-                   f"Iteration_{iter_num + 1}/lr": lr})
+                   f"Iteration_{iter_num + 1}/lr": current_lr})
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -541,7 +566,11 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
             print(f"Early stopping at epoch {epoch+1}")
             break
 
-        scheduler.step()
+        # Apply warmup scheduler if in warmup phase, otherwise apply StepLR
+        if epoch < warmup_steps:
+            warmup_scheduler.step()
+        else:
+            scheduler.step()
 
     # Save model to disk
-    # torch.save(sam_model.state_dict(), "/workspace/mask-auto-labeler/SAM_AL/fine_tune_sam_model.pth")
+    torch.save(sam_model.state_dict(), "/workspace/sam_al/model-directory/fine_tune_sam_model.pth")

@@ -105,7 +105,7 @@ class CustomCityscapes(Cityscapes):
             # Map class_id to category string
             category = CLASS_ID_TO_CATEGORY.get(class_id, 'unknown')
 
-            if category != 'car' and category != 'truck' and category != 'bus':
+            if category != 'car' and category != 'truck' and category != 'bus' and category != 'person' and category != 'bicycle' and category != 'motorcycle':
                 continue
 
             # Append the mask, category, and bounding box to the list

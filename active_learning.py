@@ -13,9 +13,9 @@ class ActiveLearningPlatform:
         # Existing initialization code...
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = val_dataset
-        initial_train_dataset = Subset(initial_train_dataset, range(10))
-        self.test_dataset = Subset(test_dataset, range(1000))
+        self.validation_dataset = val_dataset # Subset(val_dataset, range(50))
+        initial_train_dataset = initial_train_dataset # Subset(initial_train_dataset, range(100))
+        self.test_dataset = Subset(test_dataset, range(10))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
         self.lr = lr
@@ -153,10 +153,10 @@ class ActiveLearningPlatform:
 
         # Select the indices of the num_samples lowest IoU scores
         
-        ################## TODO : DELETE THIS LINE ##################
-        if num_samples == 0:
-            num_samples = 2
-        ################## TODO : DELETE THIS LINE ##################
+        # ################## TODO : DELETE THIS LINE ##################
+        # if num_samples == 0:
+        #     num_samples = 2
+        # ################## TODO : DELETE THIS LINE ##################
 
         selected_indices_in_subset = sorted_indices_in_subset[:num_samples]
 
@@ -164,6 +164,9 @@ class ActiveLearningPlatform:
         selected_indices_in_dataset = [unlabeled_subset.indices[idx] for idx in selected_indices_in_subset]
 
         return selected_indices_in_dataset
+
+    def random_query_strategy(self, unlabeled_subset, num_samples):
+        return random.sample(range(len(unlabeled_subset)), num_samples)
 
     def query_labels(self, num_images_to_query=1):
         """
@@ -176,7 +179,7 @@ class ActiveLearningPlatform:
         num_samples_to_query = min(len(unlabeled_subset), num_images_to_query)
 
         if self.query_strategy == 'random':
-            queried_indices = random_query_strategy(unlabeled_subset, num_samples_to_query)
+            queried_indices = self.random_query_strategy(unlabeled_subset, num_samples_to_query)
             queried_indices = [unlabeled_subset.indices[idx] for idx in queried_indices]  # Map back to dataset indices
         elif self.query_strategy == 'oracle':
             queried_indices = self.oracle_query_strategy(unlabeled_subset, num_samples_to_query)
@@ -241,8 +244,7 @@ class ActiveLearningPlatform:
     def run(self, precent_from_dataset_to_query_each_iteration=0.1):
         # Updated run method as previously described
         wandb.init(
-            project="ActiveLearningSAM",
-            mode="disabled",
+            project="ActiveLearningSAM"
         )
         for iteration in range(self.max_iterations):
             self.iteration = iteration
@@ -266,8 +268,7 @@ class ActiveLearningPlatform:
         wandb.finish()
 
 # The random query strategy remains the same
-def random_query_strategy(unlabeled_subset, num_samples):
-    return random.sample(range(len(unlabeled_subset)), num_samples)
+
 
 # ActiveLearningDataset class remains the same
 class ActiveLearningDataset:

@@ -4,6 +4,7 @@ import cv2
 import torch
 import matplotlib.patches as patches
 from matplotlib.colors import ListedColormap
+from torch.optim.lr_scheduler import _LRScheduler
 
 def polygon_to_mask(polygon, image_shape=(1024, 2048)):
     """
@@ -108,14 +109,9 @@ def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.p
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
 
     ax[0].imshow(image)
-    ax[0].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)
-    ax[0].set_title('Image with GT Mask')
-    min_x, min_y, max_x, max_y = curr_bbox * 2
-    
-    width = max_x - min_x
-    height = max_y - min_y
-    rect = patches.Rectangle((min_x, min_y), width, height, linewidth=1, edgecolor='r', facecolor='none')
-    ax[0].add_patch(rect)
+    # ax[0].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)
+    ax[0].set_title('Image')
+
 
     ax[1].imshow(image)
     ax[1].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)
@@ -125,6 +121,12 @@ def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.p
     ax[2].imshow(gt_mask, cmap=gt_cmap, alpha=0.5)
     ax[2].imshow(sam_mask, cmap=sam_cmap, alpha=0.5)
     ax[2].set_title('Image with GT and SAM Masks')
+    min_x, min_y, max_x, max_y = curr_bbox * 2
+    
+    width = max_x - min_x
+    height = max_y - min_y
+    rect = patches.Rectangle((min_x, min_y), width, height, linewidth=1, edgecolor='r', facecolor='none')
+    ax[2].add_patch(rect)
 
     for a in ax:
         a.axis('off')
@@ -132,3 +134,29 @@ def visualize_and_save(image, gt_mask, sam_mask, curr_bbox, filename="test_sam.p
     plt.tight_layout()
     plt.savefig(filename)
     plt.close(fig)
+
+class WarmupScheduler(_LRScheduler):
+    def __init__(self, optimizer, warmup_steps, initial_lr, final_lr, last_epoch=-1):
+        """
+        Custom scheduler to warm up the learning rate.
+
+        Parameters:
+        optimizer (Optimizer): Optimizer to apply the warmup to.
+        warmup_steps (int): Number of steps for the warmup phase.
+        initial_lr (float): Starting learning rate for the warmup.
+        final_lr (float): Final learning rate after warmup.
+        last_epoch (int): The index of the last epoch.
+        """
+        self.warmup_steps = warmup_steps
+        self.initial_lr = initial_lr
+        self.final_lr = final_lr
+        self.lr_step = (final_lr - initial_lr) / warmup_steps
+        super(WarmupScheduler, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < self.warmup_steps:
+            # Linearly increase the learning rate
+            return [self.initial_lr + self.lr_step * self.last_epoch for _ in self.base_lrs]
+        else:
+            # Return the base learning rate (final_lr) after warmup
+            return [self.final_lr for _ in self.base_lrs]
