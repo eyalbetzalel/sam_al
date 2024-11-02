@@ -484,33 +484,33 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
             ##########################################
 
-            # if data is None:
-            #     continue
+            if data is None:
+                continue
             
-            # gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
+            gt_mask, bboxes, labels = get_values_from_data_iter(data, batch_size, predictor)
             
-            # if labels == None:
-            #         continue
-            # if len(labels) == 0:
-            #     continue
+            if labels == None:
+                    continue
+            if len(labels) == 0:
+                continue
 
-            # input_image = input_image.to(predictor.device)
-            # original_image_size = (1024, 2048)
-            # input_size = (512, 1024)
+            input_image = input_image.to(predictor.device)
+            original_image_size = (1024, 2048)
+            input_size = (512, 1024)
 
-            # input_image = input_image.permute(1, 2 , 0)
-            # input_image = input_image.cpu().numpy()
-            # input_image = input_image * 255
-            # input_image = input_image.astype(np.uint8)
-            # input_image = predictor.transform_image(input_image) # change shape 2048 --> 1024
-            # input_image_torch = torch.as_tensor(input_image, device=predictor.device) # uint8 0:255 values - torch.Size([512, 1024, 3]) 
-            # input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :] # uint8 0:255 values - torch.Size([1, 3, 512, 1024])
-            # input_image_postprocess = sam_model.preprocess(input_image_torch)
-            # with torch.no_grad():
-            #     image_embedding = sam_model.image_encoder(input_image_postprocess)
+            input_image = input_image.permute(1, 2 , 0)
+            input_image = input_image.cpu().numpy()
+            input_image = input_image * 255
+            input_image = input_image.astype(np.uint8)
+            input_image = predictor.transform_image(input_image) # change shape 2048 --> 1024
+            input_image_torch = torch.as_tensor(input_image, device=predictor.device) # uint8 0:255 values - torch.Size([512, 1024, 3]) 
+            input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :] # uint8 0:255 values - torch.Size([1, 3, 512, 1024])
+            input_image_postprocess = sam_model.preprocess(input_image_torch)
+            with torch.no_grad():
+                image_embedding = sam_model.image_encoder(input_image_postprocess)
 
    
-            # for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
+            for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 
             #     ########## Demo Sanity Check - 2 ##########
 
@@ -543,8 +543,8 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
             #     #     wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
             #     #     #singleImageLoggingFlag = False
 
-            # del loss, binary_mask, image_embedding, input_image_postprocess
-            # torch.cuda.empty_cache()
+            del loss, binary_mask, image_embedding, input_image_postprocess
+            torch.cuda.empty_cache()
 
 
                 
