@@ -13,8 +13,8 @@ class ActiveLearningPlatform:
         # Existing initialization code...
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = val_dataset # Subset(val_dataset, range(50))
-        initial_train_dataset = initial_train_dataset # Subset(initial_train_dataset, range(100))
+        self.validation_dataset = val_dataset # Subset(val_dataset, range(50)) # 
+        initial_train_dataset =  initial_train_dataset # Subset(initial_train_dataset, range(100)) # 
         self.test_dataset = Subset(test_dataset, range(10))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
@@ -244,7 +244,9 @@ class ActiveLearningPlatform:
     def run(self, precent_from_dataset_to_query_each_iteration=0.1):
         # Updated run method as previously described
         wandb.init(
-            project="ActiveLearningSAM"
+            project="ActiveLearningSAM",
+            name="Ecoder + Decoder traninig", 
+            # mode="disabled" 
         )
         for iteration in range(self.max_iterations):
             self.iteration = iteration

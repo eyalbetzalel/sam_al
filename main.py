@@ -7,7 +7,7 @@ batch_size = 16
 max_iterations = 9
 query_strategy = 'oracle' # 'random' or 'oracle'
 training_epoch_per_iteration = 100
-lr = 1e-4
+lr = 1e-5
 
 # Setup SAM model and predictor
 predictor, sam_model = setup_sam_model()

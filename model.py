@@ -265,7 +265,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     loss_fn = DiceLoss(smooth=1)
 
     # Initialize the warmup scheduler
-    initial_lr = lr * 0.1  # Starting small, typically 10% of the target lr
+    initial_lr = lr * 0.01  # Starting small, typically 10% of the target lr
     warmup_scheduler = WarmupScheduler(optimizer, warmup_steps=warmup_steps, initial_lr=initial_lr, final_lr=lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.8)
     
@@ -362,7 +362,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
         
         return iou.item()
 
-    def validate_model(validation_dataset, epoch):
+    def validate_model(validation_dataset, epoch, iter_num):
         """
         Validate the model on the validation dataset.
 
@@ -408,10 +408,12 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                     binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                     loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                     iou = calculate_iou(curr_gt_mask, binary_mask)
-                    if iou < 0.5:
+                    wandb.log({f"Iteration_{iter_num + 1}/Validation/Epoch": epoch, f"Iteration_{iter_num + 1}/Validation/IoU": iou, f"Iteration_{iter_num + 1}/Validation/loss": loss.cpu().numpy().item()})
+
+                    # if iou < 0.5:
                         #   Save the image, gt_mask, and binary_mask
                         # Define the target size
-                        target_size = (1024, 2048)
+                        # target_size = (1024, 2048)
 
                     #     # Interpolate the image to the target size
                     #     input_image_torch_vis = input_image_torch.float() / 255.0
@@ -525,7 +527,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
                 loss.backward()
                             
                 total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in sam_model.parameters() if p.grad is not None])) # Calculate gradient norm before clipping
-                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Grad Norm Before Clipping": total_norm.item()})
+                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Grad Norm Before Clipping": total_norm.item(), f"Iteration_{iter_num + 1}/train_loss": loss.item()})
 
                 clip_grad_norm_(sam_model.parameters(), max_grad_norm) # Apply gradient clippinp
                 optimizer.step()
@@ -548,7 +550,7 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
 
                 
-        val_loss = validate_model(validation_dataset, epoch)
+        val_loss = validate_model(validation_dataset, epoch, iter_num)
 
         current_lr = optimizer.param_groups[0]['lr']
  
