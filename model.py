@@ -240,7 +240,11 @@ def setup_sam_model():
     predictor = SamPredictor(sam)
     return predictor, sam
 
-def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, iter_num=0, lr=1e-5, warmup_steps=5, max_grad_norm=1.0):
+def finetune_sam_model(
+    sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, 
+    iter_num=0, lr=1e-5, warmup_steps=5, max_grad_norm=1.0, optimizer_name='Adam', gamma=0.8, 
+    step_size=5
+):
     """
     Fine-tune the SAM model on the given dataset.
 
@@ -254,20 +258,37 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
     patience (int): Number of epochs with no improvement after which training will be stopped.
     iter_num (int): Current iteration number.
     lr (float): Learning rate.
+    warmup_steps (int): Number of warmup steps.
+    max_grad_norm (float): Maximum gradient norm for clipping.
+    optimizer_name (str): Name of the optimizer to use ('Adam' or 'SGD').
+    gamma (float): Multiplicative factor of learning rate decay.
+    step_size (int): Period of learning rate decay.
 
     Returns:
-    None
+    float: The best validation loss.
     """
-    # Setup optimizer, loss function, and scheduler
-    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters(), sam_model.prompt_encoder.parameters()), lr=lr)
-    optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()), lr=lr)
-    # optimizer = torch.optim.Adam(chain(sam_model.mask_decoder.parameters()), lr=lr)
+    # Setup optimizer based on optimizer_name
+    if optimizer_name == 'SGD':
+        optimizer = torch.optim.SGD(
+            chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()),
+            lr=lr, momentum=0.9
+        )
+    elif optimizer_name == 'Adam':
+        optimizer = torch.optim.Adam(
+            chain(sam_model.mask_decoder.parameters(), sam_model.image_encoder.parameters()),
+            lr=lr
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+
     loss_fn = DiceLoss(smooth=1)
 
     # Initialize the warmup scheduler
     initial_lr = lr * 0.01  # Starting small, typically 10% of the target lr
     warmup_scheduler = WarmupScheduler(optimizer, warmup_steps=warmup_steps, initial_lr=initial_lr, final_lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.8)
+
+    # Setup learning rate scheduler with gamma and step_size
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
     
     def clip_mask_to_bbox(mask, bbox, delta=0.1):
         
@@ -576,3 +597,4 @@ def finetune_sam_model(sam_model, predictor, train_dataset, validation_dataset, 
 
     # Save model to disk
     torch.save(sam_model.state_dict(), "/workspace/sam_al/model-directory/fine_tune_sam_model.pth")
+    return best_val_loss

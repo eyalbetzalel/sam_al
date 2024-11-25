@@ -9,12 +9,12 @@ import numpy as np
 import torch.nn.functional as F
 
 class ActiveLearningPlatform:
-    def __init__(self, model, predictor, initial_train_dataset, val_dataset, test_dataset, batch_size, training_epoch_per_iteration, lr, max_active_learning_iterations, query_strategy):
+    def __init__(self, model, predictor, initial_train_dataset, val_dataset, test_dataset, batch_size, training_epoch_per_iteration, lr, max_active_learning_iterations, query_strategy, optimizer_name='Adam', warmup_steps=5, gamma=0.8, step_size=5):
         # Existing initialization code...
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = val_dataset # Subset(val_dataset, range(50)) # 
-        initial_train_dataset =  initial_train_dataset # Subset(initial_train_dataset, range(100)) # 
+        self.validation_dataset = val_dataset # Subset(val_dataset, range(50)) #val_dataset 
+        initial_train_dataset =  initial_train_dataset #Subset(initial_train_dataset, range(100)) #initial_train_dataset 
         self.test_dataset = Subset(test_dataset, range(10))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
@@ -23,11 +23,16 @@ class ActiveLearningPlatform:
         self.query_strategy = query_strategy
         self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.001, sampling_method='random')
         self.loss_fn = torch.nn.MSELoss()  # Initialize the loss function
+        self.optimizer_name = optimizer_name
+        self.warmup_steps = warmup_steps
+        self.gamma = gamma
+        self.step_size = step_size
+        self.best_val_loss = None
 
     def train_model(self):
         # Updated train_model method as previously described
         training_subset = self.active_learning_dataset.get_training_subset()
-        finetune_sam_model(
+        self.best_val_loss = finetune_sam_model(
             sam_model=self.model,
             predictor=self.predictor,
             train_dataset=training_subset,
@@ -36,8 +41,15 @@ class ActiveLearningPlatform:
             epoches=self.training_epoch_per_iteration,
             patience=3,  # Adjust patience if needed
             iter_num=self.iteration,
-            lr=self.lr
+            lr=self.lr,
+            optimizer_name=self.optimizer_name,
+            warmup_steps=self.warmup_steps,
+            gamma=self.gamma,
+            step_size=self.step_size
         )
+
+    def get_validation_loss(self):
+        return self.best_val_loss
 
     def compute_loss_and_mask(self, image_embedding, bbox, input_size, original_image_size, delta=0.1):
         # Updated compute_loss_and_mask method with mask clipping
@@ -243,16 +255,29 @@ class ActiveLearningPlatform:
 
     def run(self, precent_from_dataset_to_query_each_iteration=0.1):
         # Updated run method as previously described
+        # Create a unique run name with hyperparameters
+        run_name = (
+            f"Trial_lr_{self.lr}_bs_{self.batch_size}_opt_{self.optimizer_name}"
+            f"_ws_{self.warmup_steps}_gamma_{self.gamma}_step_{self.step_size}"
+        )
         wandb.init(
             project="ActiveLearningSAM",
-            name="Ecoder + Decoder traninig", 
+            name=run_name,
+            config={
+                "learning_rate": self.lr,
+                "batch_size": self.batch_size,
+                "optimizer": self.optimizer_name,
+                "warmup_steps": self.warmup_steps,
+                "gamma": self.gamma,
+                "step_size": self.step_size
+            }
             # mode="disabled" 
         )
         for iteration in range(self.max_iterations):
             self.iteration = iteration
-            if iteration > 0:
-                self.train_model()
-            print(f"Iteration {iteration}/{self.max_iterations} complete")    
+            # if iteration > 0:
+            #     self.train_model()
+                
 
             total_percent_so_far = precent_from_dataset_to_query_each_iteration * iteration
             # test_loss, test_iou = self.test_model()
@@ -265,6 +290,8 @@ class ActiveLearningPlatform:
             num_images_to_query = int(np.floor(precent_from_dataset_to_query_each_iteration * len(self.active_learning_dataset.dataset)))
             queried_indices = self.query_labels(num_images_to_query)
             self.active_learning_dataset.update_labeled_set(queried_indices)
+            self.train_model()
+            print(f"Iteration {iteration}/{self.max_iterations} complete")
           
         torch.save(self.model.state_dict(), "model-directory/final_sam_model.pth")
         wandb.finish()
