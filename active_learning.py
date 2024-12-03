@@ -32,7 +32,6 @@ class ActiveLearningPlatform:
         self.validation_step = 0
 
     def train_model(self):
-        # Updated train_model method as previously described
         training_subset = self.active_learning_dataset.get_training_subset()
         self.best_val_loss, self.training_step, self.validation_step = finetune_sam_model(
             sam_model=self.model,
@@ -41,7 +40,7 @@ class ActiveLearningPlatform:
             validation_dataset=self.validation_dataset,
             batch_size=self.batch_size,
             epoches=self.training_epoch_per_iteration,
-            patience=3,  # Adjust patience if needed
+            patience=3,
             iter_num=self.iteration,
             lr=self.lr,
             optimizer_name=self.optimizer_name,

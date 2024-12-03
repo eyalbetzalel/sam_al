@@ -11,6 +11,7 @@ import pandas as pd
 import seaborn as sns
 from utils import WarmupScheduler
 from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import DataLoader
 
 # Dice loss implementation for segmentation tasks
 class DiceLoss(nn.Module):
@@ -281,7 +282,9 @@ def finetune_sam_model(
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
-    loss_fn = DiceLoss(smooth=1)
+    #loss_fn = DiceLoss(smooth=1)
+    # mse_loss:
+    loss_fn = nn.MSELoss()
 
     # Initialize the warmup scheduler
     initial_lr = lr * 0.01  # Starting small, typically 10% of the target lr
@@ -501,18 +504,11 @@ def finetune_sam_model(
     # best_val_loss = 100000
     epochs_without_improvement = 0
     
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     for epoch in range(epoches):
         singleImageLoggingFlag = True
-        for index, (input_image, data) in enumerate(train_dataset):
-            (input_image, data) = train_dataset[0]
-
-            ######### Demo Sanity Check - 1 ##########
-
-            # input_demo = input_image
-            # predictor_demo, _ = setup_sam_model()
-
-            ##########################################
+        for index, (input_image, data) in enumerate(train_loader):
 
             if data is None:
                 continue
@@ -541,13 +537,6 @@ def finetune_sam_model(
 
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 
-            #     ########## Demo Sanity Check - 2 ##########
-
-            #     # mask_demo = sam_demo_code(input_demo, curr_bbox, predictor_demo)
-
-            #     ###########################################
-
-
                 binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                 loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                 optimizer.zero_grad()
@@ -557,25 +546,13 @@ def finetune_sam_model(
                 wandb.log({
                     f"Iteration_{iter_num + 1}/Training/Epoch": epoch,
                     f"Iteration_{iter_num + 1}/Training/Grad Norm Before Clipping": total_norm.item(),
-                    f"Iteration_{iter_num + 1}/Training/loss": loss.item()
+                    f"Iteration_{iter_num + 1}/Training/loss": loss.item(),
+                    f"Iteration_{iter_num + 1}/Training/lr": optimizer.param_groups[0]['lr']  # Log the learning rate here
                 }, step=training_step)
                 training_step += 1
 
                 clip_grad_norm_(sam_model.parameters(), max_grad_norm) # Apply gradient clippinp
                 optimizer.step()
-                
-            #     # if singleImageLoggingFlag:
-            #     #     # Define the target size
-            #     #     target_size = (1024, 2048)
-
-            #     #     # Interpolate the image to the target size
-            #     #     input_image_torch = input_image_torch.float() / 255.0
-            #     #     input_image_torch = F.interpolate(input_image_torch, size=target_size, mode='bilinear', align_corners=False)
-
-            #     #     visualize_and_save(input_image_torch, curr_gt_mask, binary_mask, curr_bbox, filename="test_sam.png")
-            #     #     # visualize_and_save(input_image_torch, curr_gt_mask, mask_demo[None,:,:], curr_bbox, filename="test_sam_demo.png")
-            #     #     wandb.log({f"Iteration_{iter_num + 1}/Validation Image | epoch {epoch}": [wandb.Image("test_sam.png")]})
-            #     #     #singleImageLoggingFlag = False
 
             del loss, binary_mask, image_embedding, input_image_postprocess
             torch.cuda.empty_cache()
@@ -585,7 +562,7 @@ def finetune_sam_model(
 
         current_lr = optimizer.param_groups[0]['lr']
  
-        wandb.log({f"Iteration_{iter_num + 1}/lr": current_lr}, step=epoch)
+        #wandb.log({f"Iteration_{iter_num + 1}/lr": current_lr}, step=epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
