@@ -243,7 +243,7 @@ def setup_sam_model():
 def finetune_sam_model(
     sam_model, predictor, train_dataset, validation_dataset, batch_size=4, epoches=1, patience=3, 
     iter_num=0, lr=1e-5, warmup_steps=5, max_grad_norm=1.0, optimizer_name='Adam', gamma=0.8, 
-    step_size=5
+    step_size=5, training_step=0, validation_step=0
 ):
     """
     Fine-tune the SAM model on the given dataset.
@@ -285,7 +285,8 @@ def finetune_sam_model(
 
     # Initialize the warmup scheduler
     initial_lr = lr * 0.01  # Starting small, typically 10% of the target lr
-    warmup_scheduler = WarmupScheduler(optimizer, warmup_steps=warmup_steps, initial_lr=initial_lr, final_lr=lr)
+    if warmup_steps > 0:
+        warmup_scheduler = WarmupScheduler(optimizer, warmup_steps=warmup_steps, initial_lr=initial_lr, final_lr=lr)
 
     # Setup learning rate scheduler with gamma and step_size
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
@@ -384,6 +385,7 @@ def finetune_sam_model(
         return iou.item()
 
     def validate_model(validation_dataset, epoch, iter_num):
+        nonlocal validation_step
         """
         Validate the model on the validation dataset.
 
@@ -429,7 +431,12 @@ def finetune_sam_model(
                     binary_mask = compute_loss_and_mask(sam_model, image_embedding, curr_bbox, predictor.device, input_size, original_image_size)
                     loss = get_loss(sam_model, binary_mask, curr_gt_mask)
                     iou = calculate_iou(curr_gt_mask, binary_mask)
-                    wandb.log({f"Iteration_{iter_num + 1}/Validation/Epoch": epoch, f"Iteration_{iter_num + 1}/Validation/IoU": iou, f"Iteration_{iter_num + 1}/Validation/loss": loss.cpu().numpy().item()})
+                    wandb.log({
+                        f"Iteration_{iter_num + 1}/Validation/Epoch": epoch,
+                        f"Iteration_{iter_num + 1}/Validation/IoU": iou,
+                        f"Iteration_{iter_num + 1}/Validation/loss": loss.cpu().numpy().item()
+                    }, step=validation_step)
+                    validation_step += 1
 
                     # if iou < 0.5:
                         #   Save the image, gt_mask, and binary_mask
@@ -532,7 +539,6 @@ def finetune_sam_model(
             with torch.no_grad():
                 image_embedding = sam_model.image_encoder(input_image_postprocess)
 
-   
             for i, (curr_gt_mask, curr_bbox, curr_label) in enumerate(zip(gt_mask, bboxes, labels)):
                 
             #     ########## Demo Sanity Check - 2 ##########
@@ -548,7 +554,12 @@ def finetune_sam_model(
                 loss.backward()
                             
                 total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in sam_model.parameters() if p.grad is not None])) # Calculate gradient norm before clipping
-                wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, f"Iteration_{iter_num + 1}/Grad Norm Before Clipping": total_norm.item(), f"Iteration_{iter_num + 1}/train_loss": loss.item()})
+                wandb.log({
+                    f"Iteration_{iter_num + 1}/Training/Epoch": epoch,
+                    f"Iteration_{iter_num + 1}/Training/Grad Norm Before Clipping": total_norm.item(),
+                    f"Iteration_{iter_num + 1}/Training/loss": loss.item()
+                }, step=training_step)
+                training_step += 1
 
                 clip_grad_norm_(sam_model.parameters(), max_grad_norm) # Apply gradient clippinp
                 optimizer.step()
@@ -569,15 +580,12 @@ def finetune_sam_model(
             del loss, binary_mask, image_embedding, input_image_postprocess
             torch.cuda.empty_cache()
 
-
                 
         val_loss = validate_model(validation_dataset, epoch, iter_num)
 
         current_lr = optimizer.param_groups[0]['lr']
  
-        wandb.log({f"Iteration_{iter_num + 1}/Epoch": epoch, 
-                   f"Iteration_{iter_num + 1}/Validation Loss": val_loss, 
-                   f"Iteration_{iter_num + 1}/lr": current_lr})
+        wandb.log({f"Iteration_{iter_num + 1}/lr": current_lr}, step=epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -589,7 +597,6 @@ def finetune_sam_model(
             print(f"Early stopping at epoch {epoch+1}")
             break
 
-        # Apply warmup scheduler if in warmup phase, otherwise apply StepLR
         if epoch < warmup_steps:
             warmup_scheduler.step()
         else:
@@ -597,4 +604,4 @@ def finetune_sam_model(
 
     # Save model to disk
     torch.save(sam_model.state_dict(), "/workspace/sam_al/model-directory/fine_tune_sam_model.pth")
-    return best_val_loss
+    return best_val_loss, training_step, validation_step

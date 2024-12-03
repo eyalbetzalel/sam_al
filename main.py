@@ -13,7 +13,7 @@ def objective(trial):
     lr = trial.suggest_float('lr', 1e-7, 1e-4, log=True)
     batch_size = trial.suggest_categorical('batch_size', [4, 8, 16, 32])
     optimizer_name = trial.suggest_categorical('optimizer', ['SGD', 'Adam'])
-    warmup_steps = trial.suggest_int('warmup_steps', 0, 3)
+    warmup_steps = trial.suggest_int('warmup_steps', 1, 3)
     gamma = trial.suggest_float('gamma', 0.1, 0.9)
     step_size = trial.suggest_int('step_size', 1, 3)
 

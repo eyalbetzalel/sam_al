@@ -13,8 +13,8 @@ class ActiveLearningPlatform:
         # Existing initialization code...
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = val_dataset # Subset(val_dataset, range(50)) #val_dataset 
-        initial_train_dataset =  initial_train_dataset #Subset(initial_train_dataset, range(100)) #initial_train_dataset 
+        self.validation_dataset = Subset(val_dataset, range(50)) #val_dataset 
+        initial_train_dataset = Subset(initial_train_dataset, range(100)) #initial_train_dataset 
         self.test_dataset = Subset(test_dataset, range(10))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
@@ -28,11 +28,13 @@ class ActiveLearningPlatform:
         self.gamma = gamma
         self.step_size = step_size
         self.best_val_loss = None
+        self.training_step = 0
+        self.validation_step = 0
 
     def train_model(self):
         # Updated train_model method as previously described
         training_subset = self.active_learning_dataset.get_training_subset()
-        self.best_val_loss = finetune_sam_model(
+        self.best_val_loss, self.training_step, self.validation_step = finetune_sam_model(
             sam_model=self.model,
             predictor=self.predictor,
             train_dataset=training_subset,
@@ -45,7 +47,9 @@ class ActiveLearningPlatform:
             optimizer_name=self.optimizer_name,
             warmup_steps=self.warmup_steps,
             gamma=self.gamma,
-            step_size=self.step_size
+            step_size=self.step_size,
+            training_step=self.training_step,
+            validation_step=self.validation_step
         )
 
     def get_validation_loss(self):
@@ -273,6 +277,9 @@ class ActiveLearningPlatform:
             }
             # mode="disabled" 
         )
+        # Initialize step counters at the beginning of each run
+        self.training_step = 0
+        self.validation_step = 0
         for iteration in range(self.max_iterations):
             self.iteration = iteration
             # if iteration > 0:
