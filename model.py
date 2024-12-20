@@ -437,8 +437,9 @@ def finetune_sam_model(
                     wandb.log({
                         f"Iteration_{iter_num + 1}/Validation/Epoch": epoch,
                         f"Iteration_{iter_num + 1}/Validation/IoU": iou,
-                        f"Iteration_{iter_num + 1}/Validation/loss": loss.cpu().numpy().item()
-                    }, step=validation_step)
+                        f"Iteration_{iter_num + 1}/Validation/loss": loss.cpu().numpy().item(),
+                        f"Iteration_{iter_num + 1}/Validation/step": validation_step
+                    })
                     validation_step += 1
 
                     # if iou < 0.5:
@@ -504,11 +505,10 @@ def finetune_sam_model(
     # best_val_loss = 100000
     epochs_without_improvement = 0
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     for epoch in range(epoches):
         singleImageLoggingFlag = True
-        for index, (input_image, data) in enumerate(train_loader):
+        for index, (input_image, data) in enumerate(train_dataset):
 
             if data is None:
                 continue
@@ -547,8 +547,9 @@ def finetune_sam_model(
                     f"Iteration_{iter_num + 1}/Training/Epoch": epoch,
                     f"Iteration_{iter_num + 1}/Training/Grad Norm Before Clipping": total_norm.item(),
                     f"Iteration_{iter_num + 1}/Training/loss": loss.item(),
-                    f"Iteration_{iter_num + 1}/Training/lr": optimizer.param_groups[0]['lr']  # Log the learning rate here
-                }, step=training_step)
+                    f"Iteration_{iter_num + 1}/Training/lr": optimizer.param_groups[0]['lr'],  # Log the learning rate here
+                    f"Iteration_{iter_num + 1}/Training/step": training_step
+                })
                 training_step += 1
 
                 clip_grad_norm_(sam_model.parameters(), max_grad_norm) # Apply gradient clippinp

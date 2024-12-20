@@ -13,15 +13,15 @@ class ActiveLearningPlatform:
         # Existing initialization code...
         self.model = model
         self.predictor = predictor
-        self.validation_dataset = Subset(val_dataset, range(50)) #val_dataset 
-        initial_train_dataset = Subset(initial_train_dataset, range(100)) #initial_train_dataset 
+        self.validation_dataset = val_dataset # Subset(val_dataset, range(50)) #val_dataset 
+        initial_train_dataset = initial_train_dataset #Subset(initial_train_dataset, range(100)) #initial_train_dataset 
         self.test_dataset = Subset(test_dataset, range(10))
         self.batch_size = batch_size
         self.training_epoch_per_iteration = training_epoch_per_iteration
         self.lr = lr
         self.max_iterations = max_active_learning_iterations
         self.query_strategy = query_strategy
-        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=0.001, sampling_method='random')
+        self.active_learning_dataset = ActiveLearningDataset(initial_train_dataset, train_percent=1, sampling_method='random')
         self.loss_fn = torch.nn.MSELoss()  # Initialize the loss function
         self.optimizer_name = optimizer_name
         self.warmup_steps = warmup_steps
@@ -277,9 +277,15 @@ class ActiveLearningPlatform:
             # mode="disabled" 
         )
         # Initialize step counters at the beginning of each run
-        self.training_step = 0
-        self.validation_step = 0
+        
         for iteration in range(self.max_iterations):
+            wandb.define_metric(f"Iteration_{iteration + 1}/Training/step")
+            wandb.define_metric(f"Iteration_{iteration + 1}/Validation/step")
+            wandb.define_metric(f"Iteration_{iteration + 1}/Training/*", step_metric=f"Iteration_{iteration + 1}/Training/step")
+            wandb.define_metric(f"Iteration_{iteration + 1}/Validation/*", step_metric=f"Iteration_{iteration + 1}/Validation/step")
+
+            self.training_step = 0
+            self.validation_step = 0
             self.iteration = iteration
             # if iteration > 0:
             #     self.train_model()

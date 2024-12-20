@@ -1,5 +1,7 @@
 import optuna
+import time  
 from model import setup_sam_model
+import wandb  
 from active_learning import ActiveLearningPlatform
 from importCityScapesToDataloader import train_dataset, val_dataset, test_dataset
 
@@ -26,7 +28,7 @@ def objective(trial):
         val_dataset, 
         test_dataset, 
         batch_size,
-        training_epoch_per_iteration=7,
+        training_epoch_per_iteration=10,
         lr=lr, 
         max_active_learning_iterations=1, 
         query_strategy='oracle',
@@ -36,15 +38,27 @@ def objective(trial):
         step_size=step_size
     )
 
+    start_time = time.time()  # Start time
     active_learning_platform.run(precent_from_dataset_to_query_each_iteration=0.1)
+    end_time = time.time()  # End time
+
+    elapsed_time = end_time - start_time
 
     val_loss = active_learning_platform.get_validation_loss()
+
+    print(f"Trial completed in {elapsed_time:.2f} seconds")
 
     return val_loss
 
 if __name__ == "__main__":
     study = optuna.create_study(direction='minimize')
     study.optimize(objective, n_trials=50)
+
+    # Log output to a file
+    with open("output.log", "w") as f:
+        f.write(f"Study best trial: {study.best_trial}\n")
+        f.write(f"Best value: {study.best_value}\n")
+        f.write(f"Best parameters: {study.best_params}\n")
 
 # TODO: Implement a more advanced query strategy for active learning.
 # TODO: Implement a method to load a trained model from disk.
